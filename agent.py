@@ -4,7 +4,6 @@ import base64
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, AsyncGenerator, Any, Dict
-import re
 import dateparser
 
 import anthropic
