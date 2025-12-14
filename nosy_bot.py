@@ -1,6 +1,5 @@
 import json
 import logging
-import sqlite3
 import time
 from contextlib import asynccontextmanager
 from http import HTTPStatus

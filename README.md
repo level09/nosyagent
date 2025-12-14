@@ -38,7 +38,7 @@ Background thinking about recent conversations. Suggests things you might be mis
 "Remind me to check my glucose after dinner" - just works. No syntax, no apps. LLM understands you, delivers on time.
 
 ### Telegram Native
-This isn't a web app you forget to check. It lives in Telegram - super convenient, always in your pocket. Send it messages, images, voice notes. Chat with your AI like you'd chat with a friend.
+This isn't a web app you forget to check. It lives in Telegram - super convenient, always in your pocket. Send it messages and images. Chat with your AI like you'd chat with a friend.
 
 ## Tech Stack
 
@@ -65,16 +65,18 @@ uv run python cli.py
 
 # Run Telegram bot
 uv run uvicorn nosy_bot:app --host 0.0.0.0 --port 8000
-uv run arq worker.WorkerSettings  # for reminders
+
+# For reminders (requires Redis running on localhost:6379)
+uv run arq worker.WorkerSettings
 ```
 
-## Future Ideas
+## Roadmap
 
+- Voice message transcription
+- MCP (Model Context Protocol) integration
 - Complex file handling (PDFs, documents)
-- Voice message processing
 - Health data integrations
 - Smarter proactive suggestions
-- Multi-modal inputs
 
 ## Why "Nosy"?
 

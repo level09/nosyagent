@@ -9,7 +9,6 @@ Usage:
 
 import sys
 import asyncio
-import os
 from pathlib import Path
 from typing import Optional
 

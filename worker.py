@@ -4,12 +4,9 @@ ARQ Worker for processing scheduled reminders
 Similar to Celery but simpler - runs background tasks from Redis queue
 """
 
-import asyncio
 import logging
-from datetime import datetime
 from typing import Dict, Any
 
-from arq import create_pool
 from arq.connections import RedisSettings
 from config import Config
 from storage import Storage
