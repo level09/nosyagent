@@ -1,0 +1,78 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs
+*.log
+daily_briefings.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtual environment and editor metadata
+.venv/
+.cursor/
+
+# Brain data (should be in separate location like ~/.nosyagent)
+brain/
+.nosyagent/
+messages.db
+
+# Database files
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Semantic memory (LanceDB)
+data/semantic_memory/
+
+# Playwright
+.playwright-mcp/
+
+# Development/experimental files (not for release)
+cli_mcp_test.py
+test_mcp_agent.py
+nosy_agent_2.md
+AGENTS.md
+tests/
+
+# Personal development files (not for public repo)
+.claude/
+CLAUDE.md
+IMPROVEMENTS.md
+agent_analysis.md
+migrate_brain_files.py
+docs/
+
+# IDE and editor
+*.swp
+*.swo
+*~

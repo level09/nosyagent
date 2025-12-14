@@ -1,0 +1,38 @@
+{
+  "templates": [
+    {
+      "id": "focus",
+      "summary": "You've been working on {focus}.",
+      "question": "What matters most about this right now?",
+      "stretch": "What small step would move this forward?"
+    },
+    {
+      "id": "reflection",
+      "summary": "Taking a moment to check in.",
+      "question": "How are things going?",
+      "stretch": "What's one thing you could do today that would feel meaningful?"
+    },
+    {
+      "id": "momentum",
+      "summary": "You've been making progress.",
+      "question": "What's working well?",
+      "stretch": "What win can you build on?"
+    },
+    {
+      "id": "clarity",
+      "summary": "Time for a quick reset.",
+      "question": "What's the most important thing on your mind?",
+      "stretch": "What would make today feel successful?"
+    }
+  ],
+  "sparks": [
+    "What's one thing you've been putting off that would take less than 10 minutes?",
+    "Is there someone you've been meaning to reach out to?",
+    "What's something you're looking forward to?",
+    "What went well recently that you haven't acknowledged?",
+    "What would make tomorrow easier if you did it today?",
+    "Is there anything weighing on your mind that you could write down?",
+    "What's one small thing you could do for yourself right now?",
+    "What have you learned lately that surprised you?"
+  ]
+}
