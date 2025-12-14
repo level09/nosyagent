@@ -33,7 +33,7 @@ class Config:
     # API settings
     CLAUDE_MAX_RETRIES = 3
     CLAUDE_BASE_DELAY = 1.0
-    CLAUDE_MAX_TOKENS = 1000  # Keep responses short for Telegram
+    CLAUDE_MAX_TOKENS = 1500  # Balanced for Telegram - not too short, not too long
 
     # Companion mode
     COMPANION_MODE = os.getenv("COMPANION_MODE", "on").lower()
