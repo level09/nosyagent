@@ -2,6 +2,12 @@
 
 **An AI that actually knows you.**
 
+![Generated Image December 14, 2025 - 8_24PM (1)](https://github.com/user-attachments/assets/b477408e-bb38-4432-8d4f-7ad3ab028a10)
+
+
+
+
+
 ## The Problem
 
 I wanted to make better decisions using AI. But I can't feed ChatGPT context about everything - my health markers, financial goals, what I'm working on, what I said last month. Every conversation starts from zero.
