@@ -282,22 +282,27 @@ class CompanionService:
 
         topic = self._infer_topic(user_message)
         focus = self._focus(user_message)
-        summary = self._format_line(template.get("summary", ""), topic, focus)
-        question = self._format_line(template.get("question", ""), topic, focus)
-        stretch = self._format_line(template.get("stretch", ""), topic, focus)
 
-        lines = []
-        if summary:
-            lines.append(f"— {summary}")
-        if question:
-            lines.append(f"Q: {question}")
-        if stretch:
-            lines.append(f"Try: {stretch}")
+        # Build candidate elements (no prefixes for natural flow)
+        elements = []
 
-        if not lines:
+        if template.get("question"):
+            formatted = self._format_line(template["question"], topic, focus)
+            if formatted:
+                elements.append(formatted)
+
+        if template.get("stretch"):
+            formatted = self._format_line(template["stretch"], topic, focus)
+            if formatted:
+                elements.append(formatted)
+
+        if not elements:
             return None
 
-        return ReflectionResult(text="\n".join(lines), template_id=template["id"], line_count=len(lines))
+        # Pick just ONE element randomly for natural, non-robotic flow
+        text = random.choice(elements)
+
+        return ReflectionResult(text=text, template_id=template["id"], line_count=1)
 
     def _format_line(self, template: str, topic: str, focus: str) -> str:
         if not template:
