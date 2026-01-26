@@ -244,11 +244,21 @@ Be helpful and warm, but don't over-explain. Get to the point, then stop."""
                     context_layer += f"User: {msg.user_message}\nAssistant: {msg.agent_response}\n\n"
                 layers.append(context_layer.strip())
 
-        # Layer 4: Semantic memory - relevant past context
+        # Layer 4: Semantic memory - relevant past context with age labels
         if semantic_context:
             semantic_layer = "[Relevant Past Context]\n"
+            now = datetime.utcnow()
             for chunk in semantic_context:
-                semantic_layer += f"- {chunk.content}\n"
+                age_days = (now - chunk.timestamp).days
+                if age_days == 0:
+                    age_str = "today"
+                elif age_days == 1:
+                    age_str = "yesterday"
+                elif age_days < 7:
+                    age_str = f"{age_days}d ago"
+                else:
+                    age_str = f"{age_days // 7}w ago"
+                semantic_layer += f"- ({age_str}) {chunk.content}\n"
             layers.append(semantic_layer.strip())
 
         # Combine layers with current user message

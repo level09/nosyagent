@@ -187,22 +187,32 @@ class SemanticMemory:
             return []
 
         memories = []
+        now = datetime.utcnow()
+
         for result in results:
             # LanceDB returns _distance (lower is better)
             # Convert to similarity score (higher is better)
             distance = result.get("_distance", 1.0)
-            score = 1.0 / (1.0 + distance)  # Convert distance to similarity
+            base_score = 1.0 / (1.0 + distance)  # Convert distance to similarity
 
-            if score >= min_score:
+            if base_score >= min_score:
+                timestamp = datetime.fromisoformat(result["timestamp"])
+
+                # Apply time decay: half-life of 14 days
+                # Recent memories rank higher than old ones
+                age_days = (now - timestamp).days
+                decay = 1.0 / (1.0 + (age_days / 14.0))
+                adjusted_score = base_score * decay
+
                 memories.append(MemoryChunk(
                     chat_id=result["chat_id"],
                     content=result["content"],
                     source=result["source"],
-                    timestamp=datetime.fromisoformat(result["timestamp"]),
-                    score=score
+                    timestamp=timestamp,
+                    score=adjusted_score
                 ))
 
-        # Sort by score and limit
+        # Sort by time-adjusted score and limit
         memories.sort(key=lambda m: m.score, reverse=True)
         return memories[:limit]
 
