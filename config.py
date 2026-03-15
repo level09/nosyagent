@@ -37,7 +37,7 @@ class Config:
     CONTEXT_TOKEN_BUDGET = 12000  # adaptive context fills this greedily
 
     # Models
-    SONNET_MODEL = os.getenv("SONNET_MODEL", "claude-sonnet-4-5-20250514")
+    SONNET_MODEL = os.getenv("SONNET_MODEL", "claude-sonnet-4-5")
     HAIKU_MODEL = os.getenv("HAIKU_MODEL", "claude-haiku-4-5-20251001")
 
     # Companion mode
