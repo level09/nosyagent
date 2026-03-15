@@ -19,6 +19,7 @@ from telegram.ext import (
 from agent import AIAgent as NosyAgent
 from config import get_config
 from companion import CompanionService
+from router import Router
 from storage import Storage
 
 # Configure logging
@@ -124,6 +125,9 @@ companion_service = CompanionService(
 # Initialize agent with optional semantic memory
 semantic_memory_path = config.SEMANTIC_MEMORY_PATH if config.SEMANTIC_MEMORY_ENABLED else None
 agent = NosyAgent(config, storage, companion_service, semantic_memory_path=semantic_memory_path)
+
+# Router for smart message classification
+router = Router(config)
 
 # Whitelist of allowed chat IDs
 ALLOWED_CHAT_IDS = config.ALLOWED_CHAT_IDS
@@ -258,35 +262,22 @@ async def nudge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle regular text messages"""
+    """Handle text messages with smart routing: Haiku for simple, Sonnet for complex."""
+    thinking_message = None
     try:
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         username = update.effective_user.username or "Unknown"
         user_text = update.message.text
-        
-        # Validate input
+
         if not validate_input(user_text, chat_id):
             await update.message.reply_text(
                 "Sorry, I can't process this message. Please check the content and try again."
             )
             return
 
-        # Get message timestamp (already in UTC)
-        message_timestamp = None
-        if update.message and update.message.date:
-            message_timestamp = update.message.date
-
-        logger.info(
-            f"Processing message for chat {chat_id}, user {username}, timestamp: {message_timestamp}"
-        )
-
-        # Check whitelist protection
         if chat_id not in ALLOWED_CHAT_IDS:
-            logger.warning(
-                f"🚫 SECURITY: Unauthorized access attempt from chat_id: {chat_id}, "
-                f"user_id: {user_id}, username: {username}, message_length: {len(user_text)}"
-            )
+            logger.warning(f"Unauthorized access from chat_id: {chat_id}, user: {username}")
             await update.message.reply_text(
                 "🚫 Access Restricted\n\n"
                 "This AI agent is currently available only to specific members. "
@@ -294,56 +285,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
-        # Send initial thinking message
-        thinking_message = None
-        try:
-            thinking_message = await update.message.reply_text("🤔 Thinking...")
-            logger.debug("Successfully sent thinking message")
-        except Exception as thinking_error:
-            logger.error(f"Failed to send thinking message: {thinking_error}")
-            # Continue without thinking message - we'll send a new message instead
+        logger.info(f"Message from {username} ({chat_id}): {user_text[:80]}")
 
-        # Build context with timestamp if available
-        context = ""
-        if message_timestamp:
-            utc_time = message_timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
-            context = f"Message received at: {utc_time}"
+        # Route: simple messages go to Haiku, complex to Sonnet
+        classification = await router.classify(user_text)
+        logger.debug(f"Classified as {classification}: {user_text[:50]}")
 
-        # Get agent response - collect all chunks
-        response_chunks = []
-        async for chunk in agent.stream_chat(user_text, chat_id, context):
-            response_chunks.append(chunk)
-            logger.debug(f"Received chunk: {chunk[:100]!r}")
-
-        logger.debug(f"Total chunks received: {len(response_chunks)}")
-
-        # Build the final response from chunks
-        if response_chunks:
-            # First chunk is always "🤔 Thinking...", skip it
-            final_response = (
-                "".join(response_chunks[1:]) if len(response_chunks) > 1 else ""
-            )
-            # Clean up any leading newlines from concatenation
-            final_response = final_response.lstrip("\n")
-            logger.debug(f"Final response length: {len(final_response)}")
+        if classification == "simple":
+            # Fast path: Haiku direct reply, no tools, no thinking indicator
+            recent = await storage.get_recent_conversations(str(chat_id), limit=3)
+            recent_ctx = ""
+            if recent:
+                recent_ctx = "\n".join(
+                    f"User: {m.user_message}\nAssistant: {m.agent_response}"
+                    for m in recent[-2:]
+                )
+            final_response = await router.quick_reply(user_text, recent_ctx)
+            await storage.store_conversation(str(chat_id), user_text, final_response)
+            await send_or_edit_message(update, None, final_response)
         else:
-            final_response = ""
-            logger.warning("No response chunks received from agent")
+            # Complex path: full agent with tools, memory, companion
+            thinking_message = await update.message.reply_text("🤔 Thinking...")
+            final_response, _ = await agent.process_message(str(chat_id), user_text)
 
-        if not final_response.strip():
-            final_response = (
-                "I'm having trouble generating a response. Please try again."
-            )
+            if not final_response or not final_response.strip():
+                final_response = "✓ Done"
 
-        # Send response with simplified error handling
-        await send_or_edit_message(update, thinking_message, final_response)
+            await send_or_edit_message(update, thinking_message, final_response)
 
-        logger.debug(f"Response processing completed for chat {chat_id}")
+        logger.debug(f"Response sent for chat {chat_id}")
 
     except Exception as e:
-        logger.error(f"Error processing message for chat {chat_id}: {e}")
-        logger.error(f"Error type: {type(e).__name__}")
-        error_message = "Sorry, I encountered an error processing your request. Please try again."
+        logger.error(f"Error processing message for chat {update.effective_chat.id}: {e}")
+        error_message = "Sorry, I encountered an error. Please try again."
         try:
             await send_or_edit_message(update, thinking_message, error_message)
         except Exception as send_error:

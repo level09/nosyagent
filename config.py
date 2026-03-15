@@ -33,7 +33,12 @@ class Config:
     # API settings
     CLAUDE_MAX_RETRIES = 3
     CLAUDE_BASE_DELAY = 1.0
-    CLAUDE_MAX_TOKENS = 1500  # Balanced for Telegram - not too short, not too long
+    CLAUDE_MAX_TOKENS = 1500
+    CONTEXT_TOKEN_BUDGET = 12000  # adaptive context fills this greedily
+
+    # Models
+    SONNET_MODEL = os.getenv("SONNET_MODEL", "claude-sonnet-4-5-20250514")
+    HAIKU_MODEL = os.getenv("HAIKU_MODEL", "claude-haiku-4-5-20251001")
 
     # Companion mode
     COMPANION_MODE = os.getenv("COMPANION_MODE", "on").lower()

@@ -2,7 +2,7 @@
 name = "nosyagent"
 version = "0.1.0"
 description = "AI agent with hybrid memory system"
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 dependencies = [
     "anthropic",
     "aiosqlite",
@@ -15,6 +15,7 @@ dependencies = [
     "chatgpt-md-converter",
     "dateparser",
     "pytest",
+    "numpy>=1.26,<2",
     "lancedb",
     "sentence-transformers",
 ]

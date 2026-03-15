@@ -149,6 +149,20 @@ class Storage:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_companion_metrics_chat ON companion_metrics(chat_id, shown_at)")
+
+            # Entity triples for structured fact lookup
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS entities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    predicate TEXT NOT NULL,
+                    object TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_chat ON entities(chat_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_lookup ON entities(chat_id, predicate)")
     
     # === CONVERSATIONS ===
     
@@ -409,6 +423,45 @@ class Storage:
                 for row in rows
             ]
     
+    # === ENTITIES ===
+
+    async def replace_entities(self, chat_id: str, triples: list[dict]):
+        """Replace all entities for a user with new set."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM entities WHERE chat_id = ?", (chat_id,))
+            for t in triples:
+                subj = t.get("subject", "").strip()
+                pred = t.get("predicate", "").strip()
+                obj = t.get("object", "").strip()
+                if subj and pred and obj:
+                    await db.execute(
+                        "INSERT INTO entities (chat_id, subject, predicate, object) VALUES (?, ?, ?, ?)",
+                        (chat_id, subj.lower(), pred.lower(), obj),
+                    )
+            await db.commit()
+
+    async def search_entities(self, chat_id: str, query: str) -> list[dict]:
+        """Search entities by matching query against all columns."""
+        q = f"%{query.lower()}%"
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT subject, predicate, object FROM entities "
+                "WHERE chat_id = ? AND (subject LIKE ? OR predicate LIKE ? OR object LIKE ?)",
+                (chat_id, q, q, q),
+            )
+            rows = await cursor.fetchall()
+            return [{"subject": r[0], "predicate": r[1], "object": r[2]} for r in rows]
+
+    async def get_all_entities(self, chat_id: str) -> list[dict]:
+        """Get all entities for a user."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT subject, predicate, object FROM entities WHERE chat_id = ?",
+                (chat_id,),
+            )
+            rows = await cursor.fetchall()
+            return [{"subject": r[0], "predicate": r[1], "object": r[2]} for r in rows]
+
     async def mark_reminder_delivered(self, reminder_id: int):
         """Mark reminder as delivered"""
         async with aiosqlite.connect(self.db_path) as db:
