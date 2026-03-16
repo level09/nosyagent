@@ -11,6 +11,7 @@ import dateparser
 
 from companion import CompanionService
 from config import Config
+from notion_tools import NotionService
 from reminder_scheduler import schedule_reminder_task
 from storage import Message, Storage
 
@@ -42,6 +43,11 @@ class AIAgent:
         self.client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
         self.storage = storage
         self.companion = companion_service
+
+        self.notion = None
+        if config.NOTION_TOKEN:
+            self.notion = NotionService(config.NOTION_TOKEN)
+            logger.info("Notion integration enabled")
 
         self.semantic_memory = None
         if SEMANTIC_MEMORY_AVAILABLE and semantic_memory_path:
@@ -102,6 +108,60 @@ class AIAgent:
                 },
             },
         ]
+
+        # Notion tools (only if token configured)
+        if self.notion:
+            tools.extend([
+                {
+                    "name": "notion_search",
+                    "description": "Search the user's Notion workspace for pages, notes, docs, or databases.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Search query (e.g. 'meeting notes', 'project plan')"},
+                        },
+                        "required": ["query"],
+                    },
+                },
+                {
+                    "name": "notion_read",
+                    "description": "Read the full content of a Notion page by its ID. Use after notion_search to read a specific result.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "page_id": {"type": "string", "description": "The Notion page ID to read"},
+                        },
+                        "required": ["page_id"],
+                    },
+                },
+                {
+                    "name": "notion_create",
+                    "description": "Create a new page in the user's Notion. Use for saving notes, plans, summaries, or any structured content.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "Page title"},
+                            "content": {"type": "string", "description": "Page content in markdown format"},
+                            "parent_page_id": {"type": "string", "description": "Optional: parent page ID to nest under"},
+                        },
+                        "required": ["title", "content"],
+                    },
+                },
+                {
+                    "name": "notion_append",
+                    "description": "Append content to an existing Notion page. Use to add notes, updates, or entries to an existing page.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "page_id": {"type": "string", "description": "The Notion page ID to append to"},
+                            "content": {"type": "string", "description": "Content to append in markdown format"},
+                        },
+                        "required": ["page_id", "content"],
+                    },
+                },
+            ])
+
+        return tools
 
     # === Single code path: everything goes through _prepare_context + _run_tool_loop ===
 
@@ -293,6 +353,14 @@ class AIAgent:
 
     def _build_system_prompt(self) -> str:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        tools = (
+            "- Reminders: schedule_message, confirm briefly\n"
+            "- Memory: update_brain_file for lasting insights only\n"
+            "- Facts: query_entities for quick structured lookups\n"
+            "- Search: web_search, cite sources briefly"
+        )
+        if self.notion:
+            tools += "\n- Notion: search, read, create, and append to the user's Notion workspace"
         return (
             f"You are a proactive life optimization AI assistant. Current time: {current_time}\n\n"
             "FORMAT (Telegram):\n"
@@ -300,11 +368,7 @@ class AIAgent:
             "- Skip preambles. Be conversational but efficient.\n"
             "- Use bullet points when listing multiple items.\n\n"
             "Core capabilities: Productivity, Health, Relationships, Finance, Goals.\n\n"
-            "Tools:\n"
-            "- Reminders: schedule_message, confirm briefly\n"
-            "- Memory: update_brain_file for lasting insights only\n"
-            "- Facts: query_entities for quick structured lookups\n"
-            "- Search: web_search, cite sources briefly\n\n"
+            f"Tools:\n{tools}\n\n"
             "Be helpful and warm, but don't over-explain."
         )
 
@@ -422,6 +486,38 @@ class AIAgent:
                     "content": f"Reminder scheduled for {time_str}" if success else "Failed to schedule",
                     "success": success,
                 }
+
+            elif tool_name == "notion_search":
+                query = tool_input.get("query", "")
+                results = await self.notion.search(query, limit=5)
+                if results:
+                    lines = []
+                    for r in results:
+                        lines.append(f"- [{r['title']}] id={r['id']} ({r['last_edited'][:10]})")
+                    return {"tool_name": tool_name, "content": "\n".join(lines), "success": True}
+                return {"tool_name": tool_name, "content": "No results found.", "success": True}
+
+            elif tool_name == "notion_read":
+                page_id = tool_input.get("page_id", "")
+                page = await self.notion.read_page(page_id)
+                # Truncate if too long for tool result
+                content = page["content"]
+                if len(content) > 4000:
+                    content = content[:4000] + "\n\n... (truncated)"
+                return {"tool_name": tool_name, "content": f"# {page['title']}\n\n{content}", "success": True}
+
+            elif tool_name == "notion_create":
+                title = tool_input.get("title", "")
+                content = tool_input.get("content", "")
+                parent = tool_input.get("parent_page_id")
+                result = await self.notion.create_page(title, content, parent)
+                return {"tool_name": tool_name, "content": f"Created: {result['title']} ({result['url']})", "success": True}
+
+            elif tool_name == "notion_append":
+                page_id = tool_input.get("page_id", "")
+                content = tool_input.get("content", "")
+                await self.notion.append_to_page(page_id, content)
+                return {"tool_name": tool_name, "content": "Content appended.", "success": True}
 
             else:
                 return {"tool_name": tool_name, "content": f"Unknown tool: {tool_name}", "success": False}

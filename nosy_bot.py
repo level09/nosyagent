@@ -143,6 +143,7 @@ logger.info(
     f"NosyAgent starting: model={config.SONNET_MODEL} haiku={config.HAIKU_MODEL} "
     f"semantic_memory={'on' if semantic_memory_path else 'off'} "
     f"companion={'on' if config.COMPANION_MODE_ENABLED else 'off'} "
+    f"notion={'on' if config.NOTION_TOKEN else 'off'} "
     f"context_budget={config.CONTEXT_TOKEN_BUDGET} "
     f"users={len(ALLOWED_CHAT_IDS)}"
 )

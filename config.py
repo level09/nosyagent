@@ -49,6 +49,9 @@ class Config:
     # Semantic memory (LanceDB)
     SEMANTIC_MEMORY_ENABLED = os.getenv("SEMANTIC_MEMORY", "on").lower() != "off"
     SEMANTIC_MEMORY_PATH = DATA_DIR / "semantic_memory"
+
+    # Notion
+    NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
     
     def __init__(self):
         # Create directories if they don't exist

@@ -18,6 +18,7 @@ dependencies = [
     "numpy>=1.26,<2",
     "lancedb",
     "sentence-transformers",
+    "notion-client>=3.0.0",
 ]
 
 [tool.ruff]
