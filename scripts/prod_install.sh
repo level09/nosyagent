@@ -1,8 +1,9 @@
 #!/bin/bash
 # Install or upgrade a package on prod
 # Usage: ./scripts/prod_install.sh "python-telegram-bot>=22.6"
-
 set -e
+cd "$(dirname "$0")/.."
+[ -f .env ] && export $(grep -v '^#' .env | grep '=' | xargs)
 
 if [ -z "$1" ]; then
   echo "usage: $0 <package-spec>"
@@ -10,8 +11,8 @@ if [ -z "$1" ]; then
   exit 1
 fi
 
-HOST="nose@REDACTED"
-APP_DIR="~/nosyagent.com"
+HOST="${PROD_HOST:?Set PROD_HOST in .env (e.g. user@ip)}"
+APP_DIR="${PROD_DIR:-~/nosyagent.com}"
 
 echo "installing $1 on prod..."
 ssh $HOST "cd $APP_DIR && .venv/bin/python -m pip install '$1' 2>&1 | tail -3"

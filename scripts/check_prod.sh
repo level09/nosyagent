@@ -1,8 +1,10 @@
 #!/bin/bash
 # Quick health check for prod: API key, services, versions, disk
+cd "$(dirname "$0")/.."
+[ -f .env ] && export $(grep -v '^#' .env | grep '=' | xargs)
 
-HOST="nose@REDACTED"
-APP_DIR="~/nosyagent.com"
+HOST="${PROD_HOST:?Set PROD_HOST in .env (e.g. user@ip)}"
+APP_DIR="${PROD_DIR:-~/nosyagent.com}"
 
 echo "=== services ==="
 ssh $HOST "
