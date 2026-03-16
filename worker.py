@@ -1,138 +1,173 @@
 #!/usr/bin/env python3
 """
-ARQ Worker for processing scheduled reminders
-Similar to Celery but simpler - runs background tasks from Redis queue
+ARQ Worker: reminders + daily digest
 """
 
 import logging
-from typing import Dict, Any
+from datetime import datetime
+from typing import Any, Dict
 
+import anthropic
+import httpx
 from arq.connections import RedisSettings
+from arq.cron import cron
+
 from config import Config
 from storage import Storage
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Redis settings for ARQ
-REDIS_SETTINGS = RedisSettings(host='localhost', port=6379, database=0)
-
-# Global storage instance
+REDIS_SETTINGS = RedisSettings(host="localhost", port=6379, database=0)
 STORAGE = None
+CONFIG = None
+
+
+def get_storage():
+    global STORAGE, CONFIG
+    if STORAGE is None:
+        CONFIG = Config()
+        STORAGE = Storage(CONFIG.DB_PATH)
+    return STORAGE, CONFIG
+
+
+async def send_telegram(config, chat_id: str, text: str):
+    """Send a message via Telegram bot API."""
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10.0)
+        if resp.status_code != 200:
+            logger.error(f"Telegram send failed: {resp.status_code} {resp.text}")
+            return False
+    return True
+
+
+# === Reminder task (existing) ===
 
 async def send_reminder(ctx: Dict[str, Any], reminder_id: int, chat_id: str, message: str, **kwargs) -> str:
-    """
-    ARQ task function to send a scheduled reminder
-    This gets called by the worker when a reminder is due
-    """
-    logger.info(f"Processing reminder {reminder_id} for chat {chat_id}: {message}")
-    
-    try:
-        # Get storage instance 
-        global STORAGE
-        if STORAGE is None:
-            config = Config()
-            STORAGE = Storage(config.DB_PATH)
-            
-        storage = STORAGE
-        
-        # Mark reminder as delivered
-        await storage.mark_reminder_delivered(reminder_id)
-        
-        # Handle different delivery methods based on chat_id
-        if chat_id.startswith("cli_"):
-            # CLI user - create desktop notification
-            try:
-                import subprocess
-                # macOS desktop notification
-                subprocess.run([
-                    "osascript", "-e", 
-                    f'display notification "{message}" with title "NosyAgent Reminder" sound name "Glass"'
-                ], check=True)
-                logger.info(f"✅ CLI reminder delivered via desktop notification: {message}")
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                # Fallback to system bell and log
-                logger.info(f"🔔 CLI REMINDER: {message}")
-                try:
-                    print(f"\a🔔 REMINDER: {message}")  # Terminal bell + message
-                except:
-                    pass
-        else:
-            # Telegram user - send actual message via Telegram API
-            try:
-                import httpx
-                config = Config()
-                bot_token = config.TELEGRAM_BOT_TOKEN
-                
-                if bot_token:
-                    telegram_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                    payload = {
-                        "chat_id": chat_id,
-                        "text": f"🔔 Reminder: {message}",
-                        "parse_mode": "HTML"
-                    }
-                    
-                    async with httpx.AsyncClient() as client:
-                        response = await client.post(telegram_url, json=payload, timeout=10.0)
-                        if response.status_code == 200:
-                            logger.info(f"✅ Telegram reminder delivered: {message}")
-                        else:
-                            logger.error(f"❌ Telegram API error {response.status_code}: {response.text}")
-                else:
-                    logger.error("❌ No Telegram bot token configured")
-                    
-            except Exception as e:
-                logger.error(f"❌ Failed to send Telegram reminder: {e}")
-                # Fallback to logging
-                logger.info(f"🔔 REMINDER (fallback): {message}")
-        
-        return f"Reminder {reminder_id} delivered successfully"
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to deliver reminder {reminder_id}: {e}")
-        raise
+    storage, config = get_storage()
+    logger.info(f"reminder: delivering {reminder_id} to {chat_id}")
+
+    await storage.mark_reminder_delivered(reminder_id)
+
+    if chat_id.startswith("cli_"):
+        try:
+            import subprocess
+            subprocess.run([
+                "osascript", "-e",
+                f'display notification "{message}" with title "NosyAgent Reminder" sound name "Glass"'
+            ], check=True)
+        except Exception:
+            logger.info(f"CLI reminder: {message}")
+    else:
+        await send_telegram(config, chat_id, f"🔔 {message}")
+
+    return f"reminder {reminder_id} delivered"
+
+
+# === Daily digest ===
+
+DIGEST_PROMPT = """You are NosyAgent, a personal life optimization assistant. Generate a brief morning digest for your user based on their context below.
+
+Rules:
+- 3-5 lines max. Telegram format.
+- Reference specific facts from their brain (weight, goals, habits).
+- Note patterns from recent conversations (what they mentioned, commitments made, mood signals).
+- One actionable nudge based on their actual goals, not generic advice.
+- Be warm but direct. No fluff.
+- If they mentioned going to sleep late, note it. If weight is stalling, note it. If they skipped something, note it.
+- End with one concrete question or challenge for the day.
+
+[Brain]
+{brain}
+
+[Entities]
+{entities}
+
+[Last 24h conversations]
+{recent}
+
+[Current time]
+{now}
+
+Write the digest now. No preamble."""
+
+
+async def generate_digest(ctx: Dict[str, Any]) -> str:
+    """Generate and send morning digest to all active users."""
+    storage, config = get_storage()
+    logger.info("digest: starting daily generation")
+
+    for chat_id in config.ALLOWED_CHAT_IDS:
+        chat_id_str = str(chat_id)
+        try:
+            brain = await storage.read_user_context(chat_id_str)
+            if not brain:
+                logger.info(f"digest: skipping {chat_id_str}, no brain content")
+                continue
+
+            recent = await storage.get_recent_conversations(chat_id_str, limit=20)
+            entities = await storage.get_all_entities(chat_id_str)
+
+            # Format recent conversations (last 24h worth)
+            recent_text = ""
+            for msg in recent[-10:]:
+                recent_text += f"User: {msg.user_message}\nAgent: {msg.agent_response[:200]}\n\n"
+
+            entities_text = "\n".join(
+                f"- {e['subject']} {e['predicate']} {e['object']}" for e in entities
+            ) if entities else "No structured facts yet."
+
+            now = datetime.now().strftime("%A %B %d, %Y %H:%M")
+
+            prompt = DIGEST_PROMPT.format(
+                brain=brain,
+                entities=entities_text,
+                recent=recent_text or "No recent conversations.",
+                now=now,
+            )
+
+            client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+            response = client.messages.create(
+                model=config.SONNET_MODEL,
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            digest_text = response.content[0].text
+
+            await send_telegram(config, chat_id_str, digest_text)
+            await storage.store_conversation(chat_id_str, "[daily digest]", digest_text)
+            logger.info(f"digest: sent to {chat_id_str} ({len(digest_text)} chars)")
+
+        except Exception as e:
+            logger.error(f"digest: failed for {chat_id_str}: {e}")
+
+    return "digest complete"
+
+
+# === Worker config ===
 
 class WorkerSettings:
-    """ARQ worker configuration"""
     functions = [send_reminder]
+    cron_jobs = [
+        cron(generate_digest, hour=7, minute=0),  # 7am UTC = 8am CET
+    ]
     redis_settings = REDIS_SETTINGS
-    # Use default ARQ queue name
-    # queue_name = 'nosyagent:reminders'
-    
-async def startup(ctx: Dict[str, Any]) -> None:
-    """Worker startup - called when worker starts"""
-    logger.info("🚀 ARQ reminder worker starting up...")
-    
-    # Initialize global storage
-    global STORAGE
-    config = Config()
-    STORAGE = Storage(config.DB_PATH)
-    logger.info("✅ Storage initialized")
-    
-async def shutdown(ctx: Dict[str, Any]) -> None:
-    """Worker shutdown - called when worker stops"""  
-    logger.info("🛑 ARQ reminder worker shutting down...")
 
-# Update settings with startup/shutdown
+
+async def startup(ctx: Dict[str, Any]) -> None:
+    logger.info("worker starting")
+    get_storage()
+    logger.info("storage initialized")
+
+
+async def shutdown(ctx: Dict[str, Any]) -> None:
+    logger.info("worker shutting down")
+
+
 WorkerSettings.on_startup = startup
 WorkerSettings.on_shutdown = shutdown
 
-if __name__ == '__main__':
-    """Run the ARQ worker directly like: python worker.py"""
-    import sys
-    from pathlib import Path
-    
-    # Add project root to path
-    project_root = Path(__file__).parent
-    sys.path.insert(0, str(project_root))
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    print("🔧 Starting ARQ worker for reminder processing...")
-    print("📝 Use Ctrl+C to stop")
-    
-    # This is equivalent to: arq worker.WorkerSettings
+if __name__ == "__main__":
     from arq import run_worker
     run_worker(WorkerSettings)
