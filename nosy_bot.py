@@ -307,6 +307,22 @@ async def stream_to_draft(bot, chat_id: int, agent_stream) -> str:
     return accumulated
 
 
+def make_status_callback(bot, chat_id: int):
+    """Create a callback that shows tool activity as draft messages."""
+    draft_id = random.randint(1, 2**31)
+    statuses = []
+
+    async def on_status(label: str):
+        statuses.append(label)
+        status_text = " > ".join(statuses) + "..."
+        try:
+            await bot.send_message_draft(chat_id=chat_id, draft_id=draft_id, text=status_text)
+        except Exception:
+            pass
+
+    return on_status
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle text messages with smart routing: Haiku for simple, Sonnet streams via drafts."""
     try:
@@ -349,9 +365,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await storage.store_conversation(str(chat_id), user_text, final_response)
             await send_or_edit_message(update, None, final_response)
         else:
-            # Complex path: stream via Telegram drafts
-            await ptb.bot.send_chat_action(chat_id=chat_id, action="typing")
-            stream = agent.stream_response(str(chat_id), user_text)
+            # Complex path: show tool status as drafts, then stream response
+            on_status = make_status_callback(ptb.bot, chat_id)
+            stream = agent.stream_response(str(chat_id), user_text, on_status=on_status)
             final_response = await stream_to_draft(ptb.bot, chat_id, stream)
 
             if not final_response or not final_response.strip():

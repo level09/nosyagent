@@ -190,8 +190,8 @@ class AIAgent:
 
         return system_prompt, built_message, recent_messages
 
-    async def _run_tool_loop(self, messages: list, api_kwargs: dict, chat_id: str):
-        """Run non-streaming tool turns. Returns messages list ready for final turn."""
+    async def _run_tool_loop(self, messages: list, api_kwargs: dict, chat_id: str, on_tool=None):
+        """Run non-streaming tool turns. Calls on_tool(name) for status updates."""
         for turn in range(5):
             response = await self.client.messages.create(messages=messages, **api_kwargs)
             if response.stop_reason != "tool_use":
@@ -200,6 +200,8 @@ class AIAgent:
             tool_results_turn = []
             for block in response.content:
                 if hasattr(block, "type") and block.type == "tool_use":
+                    if on_tool:
+                        await on_tool(block.name)
                     result = await self._handle_tool_call(block, chat_id)
                     tool_results_turn.append({
                         "type": "tool_result",
@@ -296,9 +298,29 @@ class AIAgent:
             logger.error(f"process_image error for {chat_id}: {e}")
             return "I had trouble processing your image. Could you try again?", None
 
-    async def stream_response(self, chat_id: str, user_message: str) -> AsyncGenerator[str, None]:
-        """Stream text deltas. Tool turns run non-streaming, final turn streams."""
+    TOOL_LABELS = {
+        "web_search": "searching the web",
+        "notion_search": "searching Notion",
+        "notion_read": "reading from Notion",
+        "notion_create": "writing to Notion",
+        "notion_append": "updating Notion",
+        "update_brain_file": "updating memory",
+        "read_brain_file": "checking memory",
+        "query_entities": "looking up facts",
+        "schedule_message": "setting reminder",
+    }
+
+    async def stream_response(self, chat_id: str, user_message: str, on_status=None) -> AsyncGenerator[str, None]:
+        """Stream text deltas. Calls on_status(label) during tool turns for UX feedback."""
+        async def on_tool(name):
+            label = self.TOOL_LABELS.get(name, name)
+            if on_status:
+                await on_status(label)
+
         try:
+            if on_status:
+                await on_status("thinking")
+
             system_prompt, built_message, recent_messages = await self._prepare_context(chat_id, user_message)
             messages = [{"role": "user", "content": built_message}]
             api_kwargs = dict(
@@ -308,7 +330,7 @@ class AIAgent:
                 tools=self._get_claude_tools(),
             )
 
-            messages, _ = await self._run_tool_loop(messages, api_kwargs, chat_id)
+            messages, _ = await self._run_tool_loop(messages, api_kwargs, chat_id, on_tool=on_tool)
 
             # Final turn: stream text
             full_response = ""
