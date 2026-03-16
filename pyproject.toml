@@ -7,7 +7,7 @@ dependencies = [
     "anthropic",
     "aiosqlite",
     "python-dotenv",
-    "python-telegram-bot",
+    "python-telegram-bot>=22.6",
     "fastapi",
     "uvicorn",
     "arq",

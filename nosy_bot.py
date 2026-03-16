@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 import time
 from contextlib import asynccontextmanager
 from http import HTTPStatus
@@ -261,9 +262,38 @@ async def nudge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 
+async def stream_to_draft(bot, chat_id: int, agent_stream) -> str:
+    """Stream agent response to Telegram via sendMessageDraft, return final text."""
+    draft_id = random.randint(1, 2**31)
+    accumulated = ""
+    last_sent = ""
+    MIN_DELTA = 20  # min chars between draft updates to avoid rate limits
+
+    async for chunk in agent_stream:
+        accumulated += chunk
+        if len(accumulated) - len(last_sent) >= MIN_DELTA:
+            try:
+                await bot.send_message_draft(
+                    chat_id=chat_id, draft_id=draft_id, text=accumulated
+                )
+                last_sent = accumulated
+            except Exception as e:
+                logger.debug(f"Draft update skipped: {e}")
+
+    # Send final draft if there's unsent text
+    if accumulated and accumulated != last_sent:
+        try:
+            await bot.send_message_draft(
+                chat_id=chat_id, draft_id=draft_id, text=accumulated
+            )
+        except Exception:
+            pass
+
+    return accumulated
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle text messages with smart routing: Haiku for simple, Sonnet for complex."""
-    thinking_message = None
+    """Handle text messages with smart routing: Haiku for simple, Sonnet streams via drafts."""
     try:
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
@@ -292,7 +322,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.debug(f"Classified as {classification}: {user_text[:50]}")
 
         if classification == "simple":
-            # Fast path: Haiku direct reply, no tools, no thinking indicator
+            # Fast path: Haiku direct reply
             recent = await storage.get_recent_conversations(str(chat_id), limit=3)
             recent_ctx = ""
             if recent:
@@ -304,22 +334,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await storage.store_conversation(str(chat_id), user_text, final_response)
             await send_or_edit_message(update, None, final_response)
         else:
-            # Complex path: full agent with tools, memory, companion
-            thinking_message = await update.message.reply_text("🤔 Thinking...")
-            final_response, _ = await agent.process_message(str(chat_id), user_text)
+            # Complex path: stream via Telegram drafts
+            await ptb.bot.send_chat_action(chat_id=chat_id, action="typing")
+            stream = agent.stream_response(str(chat_id), user_text)
+            final_response = await stream_to_draft(ptb.bot, chat_id, stream)
 
             if not final_response or not final_response.strip():
                 final_response = "✓ Done"
 
-            await send_or_edit_message(update, thinking_message, final_response)
+            # Finalize with a real message (draft disappears, message persists)
+            await send_or_edit_message(update, None, final_response)
 
         logger.debug(f"Response sent for chat {chat_id}")
 
     except Exception as e:
         logger.error(f"Error processing message for chat {update.effective_chat.id}: {e}")
-        error_message = "Sorry, I encountered an error. Please try again."
         try:
-            await send_or_edit_message(update, thinking_message, error_message)
+            await update.message.reply_text("Sorry, I encountered an error. Please try again.")
         except Exception as send_error:
             logger.error(f"Failed to send error message: {send_error}")
 

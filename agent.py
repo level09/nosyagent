@@ -535,8 +535,84 @@ class AIAgent:
             dt = dt + timedelta(days=1)
         return dt
 
-    # === Streaming interface (backward compat) ===
+    # === Streaming interface ===
 
+    async def stream_response(self, chat_id: str, user_message: str) -> AsyncGenerator[str, None]:
+        """Stream text deltas from Claude. Tool turns run non-streaming, final turn streams."""
+        try:
+            recent_messages = await self.storage.get_recent_conversations(chat_id, limit=50)
+            user_context = await self.storage.read_user_context(chat_id)
+
+            semantic_context = []
+            if self.semantic_memory:
+                try:
+                    semantic_context = self.semantic_memory.search(user_message, chat_id, limit=3)
+                except Exception as e:
+                    logger.warning(f"Semantic search failed: {e}")
+
+            system_prompt = self._build_system_prompt()
+            built_message = self._build_adaptive_message(
+                user_message, user_context, recent_messages, semantic_context
+            )
+
+            messages = [{"role": "user", "content": built_message}]
+            full_response = ""
+            api_kwargs = dict(
+                model=self.config.SONNET_MODEL,
+                max_tokens=self.config.CLAUDE_MAX_TOKENS,
+                system=system_prompt,
+                tools=self._get_claude_tools(),
+            )
+
+            # Handle tool turns non-streaming (fast, no user-visible output)
+            for _ in range(5):
+                response = await self.client.messages.create(messages=messages, **api_kwargs)
+                if response.stop_reason != "tool_use":
+                    break
+                messages.append({"role": "assistant", "content": response.content})
+                tool_results_turn = []
+                for block in response.content:
+                    if hasattr(block, "type") and block.type == "tool_use":
+                        result = await self._handle_tool_call(block, chat_id)
+                        tool_results_turn.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result["content"],
+                        })
+                messages.append({"role": "user", "content": tool_results_turn})
+
+            # Final turn: stream text to user
+            async with self.client.messages.stream(messages=messages, **api_kwargs) as stream:
+                async for text in stream.text_stream:
+                    full_response += text
+                    yield text
+
+            # Post-processing
+            final_response = full_response
+            if self.companion and final_response.strip():
+                try:
+                    wrapped = await self.companion.wrap_response(
+                        chat_id, user_message, final_response, recent_messages
+                    )
+                    if wrapped != final_response:
+                        extra = wrapped[len(final_response):]
+                        if extra:
+                            yield extra
+                        final_response = wrapped
+                except Exception as exc:
+                    logger.warning(f"Companion wrapper failed: {exc}")
+
+            if not final_response.strip():
+                final_response = "✓ Done"
+                yield final_response
+
+            await self.storage.store_conversation(chat_id, user_message, final_response)
+
+        except Exception as e:
+            logger.error(f"Stream error for {chat_id}: {e}")
+            yield f"Sorry, I encountered an error: {e}"
+
+    # Backward compat for CLI
     async def stream_chat(self, message: str, chat_id: int, context: str = "") -> AsyncGenerator[str, None]:
         try:
             yield "🤔 Thinking..."
