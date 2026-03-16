@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate: ~4 chars per token for English."""
     return len(text) // 4
 
 
@@ -50,7 +49,7 @@ class AIAgent:
                 self.semantic_memory = SemanticMemory(semantic_memory_path)
                 logger.info(f"Semantic memory enabled at {semantic_memory_path}")
             except Exception as e:
-                logger.warning(f"Failed to initialize semantic memory: {e}")
+                logger.warning(f"Semantic memory unavailable: {e}")
 
     def _get_claude_tools(self) -> List[Dict[str, Any]]:
         return [
@@ -104,83 +103,191 @@ class AIAgent:
             },
         ]
 
-    # === Main entry points ===
+    # === Single code path: everything goes through _prepare_context + _run_tool_loop ===
+
+    async def _prepare_context(self, chat_id: str, user_message: str):
+        """Build system prompt and user message with full context. Used by all paths."""
+        recent_messages = await self.storage.get_recent_conversations(chat_id, limit=50)
+        user_context = await self.storage.read_user_context(chat_id)
+
+        semantic_context = []
+        if self.semantic_memory:
+            try:
+                semantic_context = self.semantic_memory.search(user_message, chat_id, limit=3)
+            except Exception as e:
+                logger.warning(f"Semantic search failed: {e}")
+
+        system_prompt = self._build_system_prompt()
+        built_message = self._build_adaptive_message(
+            user_message, user_context, recent_messages, semantic_context
+        )
+
+        brain_len = len(user_context) if user_context else 0
+        logger.info(
+            f"context: chat={chat_id} brain={brain_len} history={len(recent_messages)} "
+            f"semantic={len(semantic_context)} budget={self.config.CONTEXT_TOKEN_BUDGET}"
+        )
+
+        return system_prompt, built_message, recent_messages
+
+    async def _run_tool_loop(self, messages: list, api_kwargs: dict, chat_id: str):
+        """Run non-streaming tool turns. Returns messages list ready for final turn."""
+        for turn in range(5):
+            response = await self.client.messages.create(messages=messages, **api_kwargs)
+            if response.stop_reason != "tool_use":
+                return messages, response
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results_turn = []
+            for block in response.content:
+                if hasattr(block, "type") and block.type == "tool_use":
+                    result = await self._handle_tool_call(block, chat_id)
+                    tool_results_turn.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result["content"],
+                    })
+                    logger.info(f"tool: {block.name} success={result['success']}")
+            messages.append({"role": "user", "content": tool_results_turn})
+        return messages, response
+
+    async def _finalize(self, chat_id: str, user_message: str, response_text: str, recent_messages):
+        """Companion wrap + store. Used by all paths."""
+        final = response_text
+        if self.companion and final.strip():
+            try:
+                final = await self.companion.wrap_response(
+                    chat_id, user_message, response_text, recent_messages
+                )
+            except Exception as exc:
+                logger.warning(f"Companion wrapper failed: {exc}")
+        if not final.strip():
+            final = "Done"
+        await self.storage.store_conversation(chat_id, user_message, final)
+        return final
+
+    # === Public API ===
 
     async def process_message(self, chat_id: str, user_message: str) -> tuple[str, Optional[dict]]:
+        """Non-streaming response. Used by CLI and as fallback."""
         try:
-            recent_messages = await self.storage.get_recent_conversations(chat_id, limit=50)
-            user_context = await self.storage.read_user_context(chat_id)
-
-            semantic_context = []
-            if self.semantic_memory:
-                try:
-                    semantic_context = self.semantic_memory.search(user_message, chat_id, limit=3)
-                except Exception as e:
-                    logger.warning(f"Semantic search failed: {e}")
-
-            system_prompt = self._build_system_prompt()
-            user_msg = self._build_adaptive_message(
-                user_message, user_context, recent_messages, semantic_context
+            system_prompt, built_message, recent_messages = await self._prepare_context(chat_id, user_message)
+            messages = [{"role": "user", "content": built_message}]
+            api_kwargs = dict(
+                model=self.config.SONNET_MODEL,
+                max_tokens=self.config.CLAUDE_MAX_TOKENS,
+                system=system_prompt,
+                tools=self._get_claude_tools(),
             )
 
-            response, tool_results = await self._call_claude_with_tools(
-                system_prompt, user_msg, chat_id
-            )
+            messages, response = await self._run_tool_loop(messages, api_kwargs, chat_id)
 
-            final_response = response
-            if self.companion:
-                try:
-                    final_response = await self.companion.wrap_response(
-                        chat_id, user_message, response, recent_messages
-                    )
-                except Exception as exc:
-                    logger.warning(f"Companion wrapper failed: {exc}")
+            # Extract text from final response
+            full_text = ""
+            for block in response.content:
+                if block.type == "text":
+                    full_text += block.text
 
-            await self.storage.store_conversation(chat_id, user_message, final_response)
-            return final_response, None
+            final = await self._finalize(chat_id, user_message, full_text, recent_messages)
+            return final, None
 
         except Exception as e:
-            logger.error(f"Error processing message for {chat_id}: {e}")
+            logger.error(f"process_message error for {chat_id}: {e}")
             return "I'm having trouble right now. Could you try asking again?", None
 
     async def process_message_with_image(
         self, chat_id: str, user_message: str, image_bytes: bytes
     ) -> tuple[str, Optional[dict]]:
         try:
-            recent_messages = await self.storage.get_recent_conversations(chat_id, limit=50)
-            user_context = await self.storage.read_user_context(chat_id)
+            system_prompt, built_message, recent_messages = await self._prepare_context(chat_id, user_message)
 
-            semantic_context = []
-            if self.semantic_memory:
-                try:
-                    semantic_context = self.semantic_memory.search(user_message, chat_id, limit=3)
-                except Exception as e:
-                    logger.warning(f"Semantic search failed: {e}")
+            image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+            image_format = "image/jpeg"
+            if image_bytes.startswith(b"\x89PNG"):
+                image_format = "image/png"
+            elif image_bytes.startswith(b"GIF"):
+                image_format = "image/gif"
+            elif image_bytes.startswith(b"WEBP", 8):
+                image_format = "image/webp"
 
-            system_prompt = self._build_system_prompt()
-            user_msg = self._build_adaptive_message(
-                user_message, user_context, recent_messages, semantic_context
+            message_content = [
+                {"type": "image", "source": {"type": "base64", "media_type": image_format, "data": image_base64}},
+                {"type": "text", "text": built_message},
+            ]
+
+            messages = [{"role": "user", "content": message_content}]
+            api_kwargs = dict(
+                model=self.config.SONNET_MODEL,
+                max_tokens=self.config.CLAUDE_MAX_TOKENS,
+                system=system_prompt,
+                tools=self._get_claude_tools(),
             )
 
-            response, tool_results = await self._call_claude_with_image(
-                system_prompt, user_msg, image_bytes, chat_id
-            )
+            messages, response = await self._run_tool_loop(messages, api_kwargs, chat_id)
 
-            final_response = response
-            if self.companion:
-                try:
-                    final_response = await self.companion.wrap_response(
-                        chat_id, user_message, response, recent_messages
-                    )
-                except Exception as exc:
-                    logger.warning(f"Companion wrapper failed (image): {exc}")
+            full_text = ""
+            for block in response.content:
+                if block.type == "text":
+                    full_text += block.text
 
-            await self.storage.store_conversation(chat_id, user_message, final_response)
-            return final_response, None
+            final = await self._finalize(chat_id, user_message, full_text, recent_messages)
+            return final, None
 
         except Exception as e:
-            logger.error(f"Error processing image for {chat_id}: {e}")
+            logger.error(f"process_image error for {chat_id}: {e}")
             return "I had trouble processing your image. Could you try again?", None
+
+    async def stream_response(self, chat_id: str, user_message: str) -> AsyncGenerator[str, None]:
+        """Stream text deltas. Tool turns run non-streaming, final turn streams."""
+        try:
+            system_prompt, built_message, recent_messages = await self._prepare_context(chat_id, user_message)
+            messages = [{"role": "user", "content": built_message}]
+            api_kwargs = dict(
+                model=self.config.SONNET_MODEL,
+                max_tokens=self.config.CLAUDE_MAX_TOKENS,
+                system=system_prompt,
+                tools=self._get_claude_tools(),
+            )
+
+            messages, _ = await self._run_tool_loop(messages, api_kwargs, chat_id)
+
+            # Final turn: stream text
+            full_response = ""
+            async with self.client.messages.stream(messages=messages, **api_kwargs) as stream:
+                async for text in stream.text_stream:
+                    full_response += text
+                    yield text
+
+            # Companion may append extra text
+            final = await self._finalize(chat_id, user_message, full_response, recent_messages)
+            if final != full_response:
+                extra = final[len(full_response):]
+                if extra:
+                    yield extra
+
+        except Exception as e:
+            logger.error(f"stream error for {chat_id}: {e}")
+            yield f"Sorry, I encountered an error: {e}"
+
+    # Backward compat for CLI
+    async def stream_chat(self, message: str, chat_id: int, context: str = "") -> AsyncGenerator[str, None]:
+        try:
+            yield "Thinking..."
+            response, _ = await self.process_message(str(chat_id), message)
+            yield response
+        except Exception as e:
+            logger.error(f"stream_chat error: {e}")
+            yield f"Sorry, I encountered an error: {e}"
+
+    async def stream_chat_with_image(
+        self, message: str, chat_id: int, image_bytes: bytes, context: str = ""
+    ) -> AsyncGenerator[str, None]:
+        try:
+            yield "Analyzing image..."
+            response, _ = await self.process_message_with_image(str(chat_id), message, image_bytes)
+            yield response
+        except Exception as e:
+            logger.error(f"stream_chat_with_image error: {e}")
+            yield f"Sorry, error analyzing the image: {e}"
 
     # === Prompt building ===
 
@@ -208,16 +315,13 @@ class AIAgent:
         recent_messages: List[Message],
         semantic_context: List = None,
     ) -> str:
-        """Token-aware context builder. Fills budget greedily: brain > semantic > history."""
         budget = self.config.CONTEXT_TOKEN_BUDGET
         layers = []
         used = 0
 
-        # Reserve space for current message + formatting
         msg_tokens = estimate_tokens(user_message) + 50
         used += msg_tokens
 
-        # Layer 1: Brain (always include)
         if user_context:
             brain_text = f"[Personal Context]\n{user_context}"
         else:
@@ -229,7 +333,6 @@ class AIAgent:
         layers.append(brain_text)
         used += brain_tokens
 
-        # Layer 2: Semantic search results (cap at 30% of budget)
         if semantic_context:
             semantic_text = self._format_semantic_context(semantic_context)
             semantic_tokens = estimate_tokens(semantic_text)
@@ -237,13 +340,11 @@ class AIAgent:
                 layers.append(semantic_text)
                 used += semantic_tokens
 
-        # Layer 3: Conversation history, newest first, fill remaining budget
         remaining = budget - used
         if recent_messages and remaining > 100:
             conversation_lines = []
             for msg in reversed(recent_messages):
-                # skip reminder noise
-                if "REMINDER:" in msg.agent_response or "🔔" in msg.agent_response:
+                if "REMINDER:" in msg.agent_response:
                     continue
                 line = f"User: {msg.user_message}\nAssistant: {msg.agent_response}"
                 line_tokens = estimate_tokens(line)
@@ -285,19 +386,14 @@ class AIAgent:
             if tool_name == "update_brain_file":
                 content = tool_input.get("content", "")
                 reason = tool_input.get("reason", "")
-
                 await self.storage.update_user_context(chat_id, content, reason)
-                logger.info(f"Updated brain for {chat_id}: {reason}")
-
+                logger.info(f"brain updated for {chat_id}: {reason}")
                 if self.semantic_memory:
                     try:
                         self.semantic_memory.reindex_brain(chat_id, content)
                     except Exception as e:
-                        logger.warning(f"Failed to reindex brain: {e}")
-
-                # Extract entity triples in background
+                        logger.warning(f"Reindex failed: {e}")
                 asyncio.create_task(self._extract_entities(chat_id, content))
-
                 return {"tool_name": tool_name, "content": f"Brain updated: {reason}", "success": True}
 
             elif tool_name == "read_brain_file":
@@ -308,9 +404,7 @@ class AIAgent:
                 query = tool_input.get("query", "")
                 entities = await self.storage.search_entities(chat_id, query)
                 if entities:
-                    result = "\n".join(
-                        f"- {e['subject']} {e['predicate']} {e['object']}" for e in entities
-                    )
+                    result = "\n".join(f"- {e['subject']} {e['predicate']} {e['object']}" for e in entities)
                 else:
                     result = "No matching facts found."
                 return {"tool_name": tool_name, "content": result, "success": True}
@@ -318,11 +412,9 @@ class AIAgent:
             elif tool_name == "schedule_message":
                 message = tool_input.get("message", "")
                 when_text = tool_input.get("when", "")
-
                 scheduled_time = self._parse_when(when_text)
                 if not scheduled_time:
                     return {"tool_name": tool_name, "content": f"Could not parse time: {when_text}", "success": False}
-
                 success = await schedule_reminder_task(chat_id, message, scheduled_time)
                 time_str = scheduled_time.strftime("%I:%M %p on %b %d")
                 return {
@@ -335,11 +427,10 @@ class AIAgent:
                 return {"tool_name": tool_name, "content": f"Unknown tool: {tool_name}", "success": False}
 
         except Exception as e:
-            logger.error(f"Tool {tool_name} failed: {e}")
+            logger.error(f"tool {tool_name} failed: {e}")
             return {"tool_name": tool_name, "content": "Action failed. Please try again.", "success": False}
 
     async def _extract_entities(self, chat_id: str, brain_content: str):
-        """Extract entity triples from brain content using Haiku."""
         if not brain_content.strip():
             return
         try:
@@ -350,13 +441,12 @@ class AIAgent:
                     "role": "user",
                     "content": (
                         "Extract factual triples from this personal context. "
-                        "Return a JSON array of {\"subject\", \"predicate\", \"object\"} objects.\n\n"
+                        'Return a JSON array of {"subject", "predicate", "object"} objects.\n\n'
                         "Rules:\n"
                         "- Subject is 'user' for facts about the person\n"
                         "- Normalize predicates: takes, works_at, lives_in, spouse, child, "
                         "goal, preference, allergy, hobby, tracks, age, etc.\n"
-                        "- Only extract concrete, durable facts\n"
-                        "- Skip opinions, transient states, conversation artifacts\n\n"
+                        "- Only extract concrete, durable facts\n\n"
                         f"Context:\n{brain_content}\n\n"
                         "Return ONLY a JSON array, nothing else."
                     ),
@@ -368,160 +458,9 @@ class AIAgent:
             triples = json.loads(text)
             if isinstance(triples, list):
                 await self.storage.replace_entities(chat_id, triples)
-                logger.info(f"Extracted {len(triples)} entities for {chat_id}")
+                logger.info(f"entities: extracted {len(triples)} for {chat_id}")
         except Exception as e:
             logger.warning(f"Entity extraction failed for {chat_id}: {e}")
-
-    # === Claude API calls ===
-
-    async def _call_claude_with_tools(
-        self, system_prompt: str, user_message: str, chat_id: str
-    ) -> tuple[str, List[Dict[str, Any]]]:
-        max_retries = self.config.CLAUDE_MAX_RETRIES
-        base_delay = self.config.CLAUDE_BASE_DELAY
-        tool_results = []
-
-        for attempt in range(max_retries):
-            try:
-                response = await self.client.messages.create(
-                    model=self.config.SONNET_MODEL,
-                    max_tokens=self.config.CLAUDE_MAX_TOKENS,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": user_message}],
-                    tools=self._get_claude_tools(),
-                )
-
-                messages = [{"role": "user", "content": user_message}]
-
-                while response.stop_reason == "tool_use":
-                    messages.append({"role": "assistant", "content": response.content})
-
-                    tool_results_turn = []
-                    for block in response.content:
-                        if hasattr(block, "type") and block.type == "tool_use":
-                            result = await self._handle_tool_call(block, chat_id)
-                            tool_results.append(result)
-                            tool_results_turn.append({
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": result["content"],
-                            })
-
-                    messages.append({"role": "user", "content": tool_results_turn})
-                    response = await self.client.messages.create(
-                        model=self.config.SONNET_MODEL,
-                        max_tokens=self.config.CLAUDE_MAX_TOKENS,
-                        system=system_prompt,
-                        messages=messages,
-                        tools=self._get_claude_tools(),
-                    )
-
-                full_text = ""
-                for block in response.content:
-                    if block.type == "text":
-                        full_text += block.text
-
-                if response.stop_reason == "max_tokens" and full_text.strip():
-                    full_text += "... [continued]"
-
-                if not full_text.strip():
-                    if tool_results:
-                        return "", tool_results
-                    if response.stop_reason == "max_tokens":
-                        return "I need to continue this response...", tool_results
-
-                return full_text, tool_results
-
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    raise
-                delay = base_delay * (2**attempt)
-                logger.warning(f"Claude API failed (attempt {attempt + 1}), retry in {delay}s: {e}")
-                await asyncio.sleep(delay)
-
-        return "", tool_results
-
-    async def _call_claude_with_image(
-        self, system_prompt: str, user_message: str, image_bytes: bytes, chat_id: str
-    ) -> tuple[str, List[Dict[str, Any]]]:
-        max_retries = self.config.CLAUDE_MAX_RETRIES
-        base_delay = self.config.CLAUDE_BASE_DELAY
-        tool_results = []
-
-        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-        image_format = "image/jpeg"
-        if image_bytes.startswith(b"\x89PNG"):
-            image_format = "image/png"
-        elif image_bytes.startswith(b"GIF"):
-            image_format = "image/gif"
-        elif image_bytes.startswith(b"WEBP", 8):
-            image_format = "image/webp"
-
-        message_content = [
-            {"type": "image", "source": {"type": "base64", "media_type": image_format, "data": image_base64}},
-        ]
-        if user_message.strip():
-            message_content.append({"type": "text", "text": user_message})
-
-        for attempt in range(max_retries):
-            try:
-                response = await self.client.messages.create(
-                    model=self.config.SONNET_MODEL,
-                    max_tokens=self.config.CLAUDE_MAX_TOKENS,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": message_content}],
-                    tools=self._get_claude_tools(),
-                )
-
-                messages = [{"role": "user", "content": message_content}]
-
-                while response.stop_reason == "tool_use":
-                    messages.append({"role": "assistant", "content": response.content})
-
-                    tool_results_turn = []
-                    for block in response.content:
-                        if hasattr(block, "type") and block.type == "tool_use":
-                            result = await self._handle_tool_call(block, chat_id)
-                            tool_results.append(result)
-                            tool_results_turn.append({
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": result["content"],
-                            })
-
-                    messages.append({"role": "user", "content": tool_results_turn})
-                    response = await self.client.messages.create(
-                        model=self.config.SONNET_MODEL,
-                        max_tokens=self.config.CLAUDE_MAX_TOKENS,
-                        system=system_prompt,
-                        messages=messages,
-                        tools=self._get_claude_tools(),
-                    )
-
-                full_text = ""
-                for block in response.content:
-                    if block.type == "text":
-                        full_text += block.text
-
-                if response.stop_reason == "max_tokens" and full_text.strip():
-                    full_text += "... [continued]"
-
-                if not full_text.strip():
-                    if tool_results:
-                        return "", tool_results
-                    if response.stop_reason == "max_tokens":
-                        return "I need to continue analyzing this image...", tool_results
-
-                return full_text, tool_results
-
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    raise
-                delay = base_delay * (2**attempt)
-                logger.warning(f"Claude image API failed (attempt {attempt + 1}), retry in {delay}s: {e}")
-                await asyncio.sleep(delay)
-
-        return "", tool_results
 
     def _parse_when(self, when_text: str) -> Optional[datetime]:
         settings = {
@@ -534,107 +473,3 @@ class AIAgent:
         if dt and dt < datetime.now() and "ago" not in cleaned:
             dt = dt + timedelta(days=1)
         return dt
-
-    # === Streaming interface ===
-
-    async def stream_response(self, chat_id: str, user_message: str) -> AsyncGenerator[str, None]:
-        """Stream text deltas from Claude. Tool turns run non-streaming, final turn streams."""
-        try:
-            recent_messages = await self.storage.get_recent_conversations(chat_id, limit=50)
-            user_context = await self.storage.read_user_context(chat_id)
-
-            semantic_context = []
-            if self.semantic_memory:
-                try:
-                    semantic_context = self.semantic_memory.search(user_message, chat_id, limit=3)
-                except Exception as e:
-                    logger.warning(f"Semantic search failed: {e}")
-
-            system_prompt = self._build_system_prompt()
-            built_message = self._build_adaptive_message(
-                user_message, user_context, recent_messages, semantic_context
-            )
-
-            messages = [{"role": "user", "content": built_message}]
-            full_response = ""
-            api_kwargs = dict(
-                model=self.config.SONNET_MODEL,
-                max_tokens=self.config.CLAUDE_MAX_TOKENS,
-                system=system_prompt,
-                tools=self._get_claude_tools(),
-            )
-
-            # Handle tool turns non-streaming (fast, no user-visible output)
-            for _ in range(5):
-                response = await self.client.messages.create(messages=messages, **api_kwargs)
-                if response.stop_reason != "tool_use":
-                    break
-                messages.append({"role": "assistant", "content": response.content})
-                tool_results_turn = []
-                for block in response.content:
-                    if hasattr(block, "type") and block.type == "tool_use":
-                        result = await self._handle_tool_call(block, chat_id)
-                        tool_results_turn.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result["content"],
-                        })
-                messages.append({"role": "user", "content": tool_results_turn})
-
-            # Final turn: stream text to user
-            async with self.client.messages.stream(messages=messages, **api_kwargs) as stream:
-                async for text in stream.text_stream:
-                    full_response += text
-                    yield text
-
-            # Post-processing
-            final_response = full_response
-            if self.companion and final_response.strip():
-                try:
-                    wrapped = await self.companion.wrap_response(
-                        chat_id, user_message, final_response, recent_messages
-                    )
-                    if wrapped != final_response:
-                        extra = wrapped[len(final_response):]
-                        if extra:
-                            yield extra
-                        final_response = wrapped
-                except Exception as exc:
-                    logger.warning(f"Companion wrapper failed: {exc}")
-
-            if not final_response.strip():
-                final_response = "✓ Done"
-                yield final_response
-
-            await self.storage.store_conversation(chat_id, user_message, final_response)
-
-        except Exception as e:
-            logger.error(f"Stream error for {chat_id}: {e}")
-            yield f"Sorry, I encountered an error: {e}"
-
-    # Backward compat for CLI
-    async def stream_chat(self, message: str, chat_id: int, context: str = "") -> AsyncGenerator[str, None]:
-        try:
-            yield "🤔 Thinking..."
-            response, _ = await self.process_message(str(chat_id), message)
-            if not response or not response.strip():
-                response = "✓ Done"
-            yield response
-        except Exception as e:
-            logger.error(f"Error in stream_chat: {e}")
-            yield "🤔 Thinking..."
-            yield f"Sorry, I encountered an error: {e}"
-
-    async def stream_chat_with_image(
-        self, message: str, chat_id: int, image_bytes: bytes, context: str = ""
-    ) -> AsyncGenerator[str, None]:
-        try:
-            yield "🤔 Analyzing image..."
-            response, _ = await self.process_message_with_image(str(chat_id), message, image_bytes)
-            if not response or not response.strip():
-                response = "✓ Done"
-            yield response
-        except Exception as e:
-            logger.error(f"Error in stream_chat_with_image: {e}")
-            yield "🤔 Analyzing image..."
-            yield f"Sorry, error analyzing the image: {e}"

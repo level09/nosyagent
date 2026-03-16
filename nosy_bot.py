@@ -23,10 +23,15 @@ from companion import CompanionService
 from router import Router
 from storage import Storage
 
-# Configure logging
+# Configure logging: app at INFO, silence noisy libraries
 logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("anthropic").setLevel(logging.WARNING)
+logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -132,6 +137,15 @@ router = Router(config)
 
 # Whitelist of allowed chat IDs
 ALLOWED_CHAT_IDS = config.ALLOWED_CHAT_IDS
+
+# Startup info
+logger.info(
+    f"NosyAgent starting: model={config.SONNET_MODEL} haiku={config.HAIKU_MODEL} "
+    f"semantic_memory={'on' if semantic_memory_path else 'off'} "
+    f"companion={'on' if config.COMPANION_MODE_ENABLED else 'off'} "
+    f"context_budget={config.CONTEXT_TOKEN_BUDGET} "
+    f"users={len(ALLOWED_CHAT_IDS)}"
+)
 
 # Webhook deduplication cache - stores processed update_ids with timestamps
 # Format: {update_id: timestamp}
