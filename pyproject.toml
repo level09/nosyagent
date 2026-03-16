@@ -4,16 +4,16 @@ version = "0.1.0"
 description = "AI agent with hybrid memory system"
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic",
-    "aiosqlite",
+    "anthropic>=0.62",
+    "aiosqlite>=0.20",
     "python-dotenv",
     "python-telegram-bot>=22.6",
-    "fastapi",
-    "uvicorn",
-    "arq",
-    "redis",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "arq>=0.26",
+    "redis>=5.0",
     "chatgpt-md-converter",
-    "dateparser",
+    "dateparser>=1.2",
     "pytest",
     "numpy>=1.26,<2",
     "lancedb",
@@ -51,8 +51,8 @@ exclude = [
 line-length = 88
 indent-width = 4
 
-# Assume Python 3.8+
-target-version = "py38"
+# Match requires-python
+target-version = "py311"
 
 [tool.ruff.lint]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.

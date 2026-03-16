@@ -66,7 +66,6 @@ tests/
 
 # Personal development files (not for public repo)
 .claude/
-CLAUDE.md
 IMPROVEMENTS.md
 agent_analysis.md
 migrate_brain_files.py

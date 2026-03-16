@@ -607,20 +607,20 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiosqlite" },
-    { name = "anthropic" },
-    { name = "arq" },
+    { name = "aiosqlite", specifier = ">=0.20" },
+    { name = "anthropic", specifier = ">=0.62" },
+    { name = "arq", specifier = ">=0.26" },
     { name = "chatgpt-md-converter" },
-    { name = "dateparser" },
-    { name = "fastapi" },
+    { name = "dateparser", specifier = ">=1.2" },
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "lancedb" },
     { name = "numpy", specifier = ">=1.26,<2" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "python-telegram-bot", specifier = ">=22.6" },
-    { name = "redis" },
+    { name = "redis", specifier = ">=5.0" },
     { name = "sentence-transformers" },
-    { name = "uvicorn" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [[package]]
