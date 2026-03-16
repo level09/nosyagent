@@ -58,7 +58,7 @@ class AIAgent:
                 logger.warning(f"Semantic memory unavailable: {e}")
 
     def _get_claude_tools(self) -> List[Dict[str, Any]]:
-        return [
+        tools = [
             {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
             {
                 "name": "update_brain_file",
