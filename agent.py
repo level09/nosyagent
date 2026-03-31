@@ -161,7 +161,31 @@ class AIAgent:
                 },
             ])
 
+        # Cache tool definitions (identical across requests)
+        if tools:
+            tools[-1]["cache_control"] = {"type": "ephemeral"}
         return tools
+
+    def _mark_cache_breakpoint(self, messages: list):
+        """Mark last user message for prompt caching. Clears previous message breakpoints."""
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        block.pop("cache_control", None)
+        for msg in reversed(messages):
+            if msg["role"] == "user":
+                content = msg["content"]
+                if isinstance(content, str):
+                    msg["content"] = [
+                        {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                    ]
+                elif isinstance(content, list) and content:
+                    last = content[-1]
+                    if isinstance(last, dict):
+                        last["cache_control"] = {"type": "ephemeral"}
+                break
 
     # === Single code path: everything goes through _prepare_context + _run_tool_loop ===
 
@@ -193,6 +217,7 @@ class AIAgent:
     async def _run_tool_loop(self, messages: list, api_kwargs: dict, chat_id: str, on_tool=None):
         """Run non-streaming tool turns. Calls on_tool(name) for status updates."""
         for turn in range(5):
+            self._mark_cache_breakpoint(messages)
             response = await self.client.messages.create(messages=messages, **api_kwargs)
             if response.stop_reason != "tool_use":
                 return messages, response
@@ -333,6 +358,7 @@ class AIAgent:
             messages, _ = await self._run_tool_loop(messages, api_kwargs, chat_id, on_tool=on_tool)
 
             # Final turn: stream text
+            self._mark_cache_breakpoint(messages)
             full_response = ""
             async with self.client.messages.stream(messages=messages, **api_kwargs) as stream:
                 async for text in stream.text_stream:
@@ -373,8 +399,8 @@ class AIAgent:
 
     # === Prompt building ===
 
-    def _build_system_prompt(self) -> str:
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    def _build_system_prompt(self) -> list:
+        """Return system prompt as cacheable content blocks (no timestamp, that goes in user message)."""
         tools = (
             "- Reminders: schedule_message, confirm briefly\n"
             "- Memory: update_brain_file for lasting insights only\n"
@@ -383,16 +409,22 @@ class AIAgent:
         )
         if self.notion:
             tools += "\n- Notion: search, read, create, and append to the user's Notion workspace"
-        return (
-            f"You are a proactive life optimization AI assistant. Current time: {current_time}\n\n"
-            "FORMAT (Telegram):\n"
-            "- Keep responses readable on mobile, 1-3 short paragraphs.\n"
-            "- Skip preambles. Be conversational but efficient.\n"
-            "- Use bullet points when listing multiple items.\n\n"
-            "Core capabilities: Productivity, Health, Relationships, Finance, Goals.\n\n"
-            f"Tools:\n{tools}\n\n"
-            "Be helpful and warm, but don't over-explain."
-        )
+        return [
+            {
+                "type": "text",
+                "text": (
+                    "You are a proactive life optimization AI assistant.\n\n"
+                    "FORMAT (Telegram):\n"
+                    "- Keep responses readable on mobile, 1-3 short paragraphs.\n"
+                    "- Skip preambles. Be conversational but efficient.\n"
+                    "- Use bullet points when listing multiple items.\n\n"
+                    "Core capabilities: Productivity, Health, Relationships, Finance, Goals.\n\n"
+                    f"Tools:\n{tools}\n\n"
+                    "Be helpful and warm, but don't over-explain."
+                ),
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
 
     def _build_adaptive_message(
         self,
@@ -404,6 +436,10 @@ class AIAgent:
         budget = self.config.CONTEXT_TOKEN_BUDGET
         layers = []
         used = 0
+
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        layers.append(f"Current time: {current_time}")
+        used += 10
 
         msg_tokens = estimate_tokens(user_message) + 50
         used += msg_tokens
