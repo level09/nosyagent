@@ -40,9 +40,33 @@ class Router:
     async def classify(self, message: str) -> str:
         if self._is_simple(message):
             return "simple"
-        # Everything else goes through the full agent.
-        # The Haiku classifier was mis-routing too many real messages.
+        # Short casual messages without questions don't need tools/memory
+        words = message.strip().split()
+        if len(words) <= 6 and "?" not in message:
+            return await self._haiku_classify(message)
         return "complex"
+
+    async def _haiku_classify(self, message: str) -> str:
+        """Use Haiku to classify ambiguous short messages. ~10 tokens, <$0.001."""
+        try:
+            response = await self.client.messages.create(
+                model=self.haiku,
+                max_tokens=10,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Is this message a casual/social remark (SIMPLE) or does it need "
+                        "personal memory, tools, or detailed advice (COMPLEX)? "
+                        f'Reply with one word.\n\nMessage: "{message}"'
+                    ),
+                }],
+            )
+            result = response.content[0].text.strip().lower()
+            classification = "simple" if "simple" in result else "complex"
+            logger.info(f"route: '{message[:40]}' -> {classification}")
+            return classification
+        except Exception:
+            return "complex"
 
     async def quick_reply(self, message: str, recent_context: str = "") -> str:
         """Quick reply for trivial messages only."""

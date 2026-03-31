@@ -214,11 +214,24 @@ class AIAgent:
 
         return system_prompt, built_message, recent_messages
 
+    def _log_usage(self, response, label="api"):
+        """Log token usage including cache stats."""
+        u = getattr(response, "usage", None)
+        if not u:
+            return
+        parts = [f"{label}: in={u.input_tokens} out={u.output_tokens}"]
+        cache_read = getattr(u, "cache_read_input_tokens", 0) or 0
+        cache_create = getattr(u, "cache_creation_input_tokens", 0) or 0
+        if cache_read or cache_create:
+            parts.append(f"cache_read={cache_read} cache_write={cache_create}")
+        logger.info(" ".join(parts))
+
     async def _run_tool_loop(self, messages: list, api_kwargs: dict, chat_id: str, on_tool=None):
         """Run non-streaming tool turns. Calls on_tool(name) for status updates."""
         for turn in range(5):
             self._mark_cache_breakpoint(messages)
             response = await self.client.messages.create(messages=messages, **api_kwargs)
+            self._log_usage(response, f"tool_loop[{turn}]")
             if response.stop_reason != "tool_use":
                 return messages, response
             messages.append({"role": "assistant", "content": response.content})
@@ -355,15 +368,44 @@ class AIAgent:
                 tools=self._get_claude_tools(),
             )
 
-            messages, _ = await self._run_tool_loop(messages, api_kwargs, chat_id, on_tool=on_tool)
-
-            # Final turn: stream text
+            # Stream directly if no tool use needed, otherwise run tool loop first
             self._mark_cache_breakpoint(messages)
+            first_response = await self.client.messages.create(messages=messages, **api_kwargs)
+            self._log_usage(first_response, "stream_first")
+
+            if first_response.stop_reason == "tool_use":
+                # Process tool turns non-streaming
+                messages.append({"role": "assistant", "content": first_response.content})
+                tool_results_turn = []
+                for block in first_response.content:
+                    if hasattr(block, "type") and block.type == "tool_use":
+                        if on_tool:
+                            await on_tool(block.name)
+                        result = await self._handle_tool_call(block, chat_id)
+                        tool_results_turn.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result["content"],
+                        })
+                        logger.info(f"tool: {block.name} success={result['success']}")
+                messages.append({"role": "user", "content": tool_results_turn})
+                # Continue tool loop if more tools needed
+                messages, _ = await self._run_tool_loop(messages, api_kwargs, chat_id, on_tool=on_tool)
+
+            # Final turn: stream text (only call if tools were used, otherwise we already have text)
             full_response = ""
-            async with self.client.messages.stream(messages=messages, **api_kwargs) as stream:
-                async for text in stream.text_stream:
-                    full_response += text
-                    yield text
+            if first_response.stop_reason == "tool_use":
+                self._mark_cache_breakpoint(messages)
+                async with self.client.messages.stream(messages=messages, **api_kwargs) as stream:
+                    async for text in stream.text_stream:
+                        full_response += text
+                        yield text
+            else:
+                # No tools: extract text from the response we already have (no wasted call)
+                for block in first_response.content:
+                    if block.type == "text":
+                        full_response += block.text
+                yield full_response
 
             # Companion may append extra text
             final = await self._finalize(chat_id, user_message, full_response, recent_messages)
