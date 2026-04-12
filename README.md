@@ -31,6 +31,9 @@ Most AI exists in a timeless bubble. NosyAgent understands temporal context - ho
 ### Semantic Memory
 Ask "what did we discuss about my startup?" and it finds relevant context from weeks ago. Vector search across your conversation history.
 
+### Structured Memory Lifecycle
+NosyAgent keeps structured memory items in SQLite with confidence labels, decay, retrieval strengthening, and daily consolidation. Useful memories stick because they get recalled or confirmed; stale or contradictory memories lose authority instead of silently steering future responses.
+
 ### Proactive Reflection
 Background thinking about recent conversations. Suggests things you might be missing. Not just reactive - actually reaches out with useful nudges.
 
@@ -44,7 +47,7 @@ This isn't a web app you forget to check. It lives in Telegram - super convenien
 
 - Python + Claude API (Anthropic)
 - SQLite for storage + automatic brain versioning
-- LanceDB for semantic memory
+- SQLite structured memory + LanceDB semantic recall
 - Telegram webhook bot
 - ARQ + Redis for scheduled reminders
 
@@ -59,6 +62,9 @@ uv sync
 # Configure
 cp .env.sample .env
 # Add your ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, etc.
+
+# Back up private local data before deploys or memory maintenance
+./scripts/backup_data.sh
 
 # Run locally
 uv run python cli.py
