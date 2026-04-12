@@ -201,15 +201,22 @@ class AIAgent:
             except Exception as e:
                 logger.warning(f"Semantic search failed: {e}")
 
+        structured_memory = []
+        try:
+            structured_memory = await self.storage.search_memory_items(chat_id, user_message, limit=5)
+        except Exception as e:
+            logger.warning(f"Structured memory search failed: {e}")
+
         system_prompt = self._build_system_prompt()
         built_message = self._build_adaptive_message(
-            user_message, user_context, recent_messages, semantic_context
+            user_message, user_context, recent_messages, semantic_context, structured_memory
         )
 
         brain_len = len(user_context) if user_context else 0
         logger.info(
             f"context: chat={chat_id} brain={brain_len} history={len(recent_messages)} "
-            f"semantic={len(semantic_context)} budget={self.config.CONTEXT_TOKEN_BUDGET}"
+            f"semantic={len(semantic_context)} structured={len(structured_memory)} "
+            f"budget={self.config.CONTEXT_TOKEN_BUDGET}"
         )
 
         return system_prompt, built_message, recent_messages
@@ -474,6 +481,7 @@ class AIAgent:
         user_context: str,
         recent_messages: List[Message],
         semantic_context: List = None,
+        structured_memory: List = None,
     ) -> str:
         budget = self.config.CONTEXT_TOKEN_BUDGET
         layers = []
@@ -503,6 +511,13 @@ class AIAgent:
             if used + semantic_tokens < budget * 0.7:
                 layers.append(semantic_text)
                 used += semantic_tokens
+
+        if structured_memory:
+            memory_text = self._format_structured_memory_context(structured_memory)
+            memory_tokens = estimate_tokens(memory_text)
+            if used + memory_tokens < budget * 0.75:
+                layers.append(memory_text)
+                used += memory_tokens
 
         remaining = budget - used
         if recent_messages and remaining > 100:
@@ -540,6 +555,18 @@ class AIAgent:
             lines.append(f"- ({age_str}) {chunk.content}")
         return "\n".join(lines)
 
+    def _format_structured_memory_context(self, memories: List) -> str:
+        lines = ["[Structured Memory]"]
+        for memory in memories:
+            observed_at = memory.created_at.strftime("%Y-%m-%d")
+            prefix = f"[{memory.confidence}] Previously observed on {observed_at}:"
+            if memory.confidence == "inferred":
+                prefix = f"[inferred] Possible pattern from {observed_at}:"
+            elif memory.confidence == "stale":
+                prefix = f"[stale] Older observation from {observed_at}:"
+            lines.append(f"- {prefix} {memory.content}")
+        return "\n".join(lines)
+
     # === Tool handling ===
 
     async def _handle_tool_call(self, tool_call, chat_id: str) -> Dict[str, Any]:
@@ -551,6 +578,17 @@ class AIAgent:
                 content = tool_input.get("content", "")
                 reason = tool_input.get("reason", "")
                 await self.storage.update_user_context(chat_id, content, reason)
+                try:
+                    await self.storage.store_memory_item(
+                        chat_id,
+                        content,
+                        layer="semantic",
+                        tags=["brain"],
+                        confidence="verified",
+                        half_life_days=30.0,
+                    )
+                except Exception as e:
+                    logger.warning(f"Structured memory write failed: {e}")
                 logger.info(f"brain updated for {chat_id}: {reason}")
                 if self.semantic_memory:
                     try:
@@ -654,6 +692,19 @@ class AIAgent:
             triples = json.loads(text)
             if isinstance(triples, list):
                 await self.storage.replace_entities(chat_id, triples)
+                for triple in triples:
+                    subject = triple.get("subject", "").strip()
+                    predicate = triple.get("predicate", "").strip()
+                    obj = triple.get("object", "").strip()
+                    if subject and predicate and obj:
+                        await self.storage.store_memory_item(
+                            chat_id,
+                            f"{subject} {predicate} {obj}",
+                            layer="semantic",
+                            tags=["entity", predicate.lower()],
+                            confidence="verified",
+                            half_life_days=30.0,
+                        )
                 logger.info(f"entities: extracted {len(triples)} for {chat_id}")
         except Exception as e:
             logger.warning(f"Entity extraction failed for {chat_id}: {e}")

@@ -274,6 +274,76 @@ async def nudge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(response)
 
 
+async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id_raw = update.effective_chat.id
+    if chat_id_raw not in ALLOWED_CHAT_IDS:
+        await update.message.reply_text("🚫 Access Restricted")
+        return
+
+    chat_id = str(chat_id_raw)
+    args = context.args if context.args else []
+    action = args[0].lower() if args else "status"
+
+    if action == "status":
+        status = await storage.get_memory_status(chat_id)
+        lines = [f"Memory items: {status['total']} | conflicts: {status['conflicts']}"]
+        if status["groups"]:
+            for group in status["groups"]:
+                lines.append(
+                    f"- {group['layer']}/{group['confidence']}: "
+                    f"{group['count']} avg={group['avg_strength']}"
+                )
+        else:
+            lines.append("No structured memories yet.")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    if action == "search":
+        query = " ".join(args[1:]).strip()
+        if not query:
+            await update.message.reply_text("Usage: /memory search <query>")
+            return
+        memories = await storage.search_memory_items(chat_id, query, limit=5)
+        if not memories:
+            await update.message.reply_text("No matching memories.")
+            return
+        lines = []
+        for memory in memories:
+            lines.append(
+                f"#{memory.id} [{memory.confidence}/{memory.layer}] "
+                f"strength={memory.strength:.2f}: {memory.content}"
+            )
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    if action == "conflicts":
+        conflicts = await storage.get_memory_conflicts(chat_id)
+        if not conflicts:
+            await update.message.reply_text("No open memory conflicts.")
+            return
+        lines = []
+        for conflict in conflicts:
+            lines.append(
+                f"Conflict #{conflict['id']}: {conflict['reason']}\n"
+                f"A: {conflict['memory_a']}\n"
+                f"B: {conflict['memory_b']}"
+            )
+        await update.message.reply_text("\n\n".join(lines))
+        return
+
+    if action == "sleep":
+        run = "--run" in args
+        result = await storage.run_memory_sleep(chat_id, dry_run=not run)
+        mode = "applied" if run else "preview"
+        text = f"Memory sleep {mode}: {result}"
+        if not run:
+            text += "\nAdd --run to apply these changes."
+        await update.message.reply_text(text)
+        return
+
+    await update.message.reply_text("Usage: /memory [status|search <query>|conflicts|sleep [--run]]")
+
+
 
 
 
@@ -490,6 +560,7 @@ ptb.add_handler(CommandHandler("start", start_command))
 ptb.add_handler(CommandHandler("mode", mode_command))
 ptb.add_handler(CommandHandler("quiet", quiet_command))
 ptb.add_handler(CommandHandler("nudge", nudge_command))
+ptb.add_handler(CommandHandler("memory", memory_command))
 ptb.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 

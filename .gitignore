@@ -50,6 +50,7 @@ messages.db
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/backups/
 
 # Semantic memory (LanceDB)
 data/semantic_memory/
@@ -62,7 +63,8 @@ cli_mcp_test.py
 test_mcp_agent.py
 nosy_agent_2.md
 AGENTS.md
-tests/
+tests/*
+!tests/test_memory_revamp.py
 
 # Personal development files (not for public repo)
 .claude/
@@ -70,7 +72,8 @@ CLAUDE.md
 IMPROVEMENTS.md
 agent_analysis.md
 migrate_brain_files.py
-docs/
+docs/*
+!docs/memory-revamp.md
 
 # IDE and editor
 *.swp

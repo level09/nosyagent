@@ -87,6 +87,10 @@ async def interactive_chat(agent: AIAgent, companion_service: Optional[Companion
                 print_colored("🧹 Conversation history cleared", Colors.GREEN)
                 continue
 
+            if user_input.startswith('/memory'):
+                await handle_memory_command(agent.storage, LOCAL_CHAT_ID, user_input)
+                continue
+
             if user_input.startswith('/mode') and not companion_service:
                 print_colored("Companion mode is disabled in this environment", Colors.YELLOW)
                 continue
@@ -216,6 +220,62 @@ async def report_companion(storage: Storage, chat_id: str):
         timestamp = metric.shown_at.strftime('%Y-%m-%d %H:%M')
         template = metric.template_id or "?"
         print(f"  • {timestamp} | template={template} | lines={metric.line_count}")
+
+
+async def handle_memory_command(storage: Storage, chat_id: str, command: str):
+    """Handle local memory inspection commands."""
+    parts = command.split(maxsplit=2)
+    action = parts[1].lower() if len(parts) > 1 else "status"
+
+    if action == "status":
+        status = await storage.get_memory_status(chat_id)
+        print_colored(f"🧠 Memory items: {status['total']} | conflicts: {status['conflicts']}", Colors.GREEN)
+        if not status["groups"]:
+            print_colored("No structured memories yet.", Colors.BLUE)
+            return
+        for group in status["groups"]:
+            print(
+                f"  {group['layer']}/{group['confidence']}: "
+                f"{group['count']} avg_strength={group['avg_strength']}"
+            )
+        return
+
+    if action == "search":
+        if len(parts) < 3:
+            print_colored("Usage: /memory search <query>", Colors.YELLOW)
+            return
+        memories = await storage.search_memory_items(chat_id, parts[2], limit=5)
+        if not memories:
+            print_colored("No matching memories.", Colors.BLUE)
+            return
+        for memory in memories:
+            print(
+                f"  #{memory.id} [{memory.confidence}/{memory.layer}] "
+                f"strength={memory.strength:.2f}: {memory.content}"
+            )
+        return
+
+    if action == "conflicts":
+        conflicts = await storage.get_memory_conflicts(chat_id)
+        if not conflicts:
+            print_colored("No open memory conflicts.", Colors.GREEN)
+            return
+        for conflict in conflicts:
+            print_colored(f"Conflict #{conflict['id']}: {conflict['reason']}", Colors.YELLOW)
+            print(f"  A: {conflict['memory_a']}")
+            print(f"  B: {conflict['memory_b']}")
+        return
+
+    if action == "sleep":
+        run = "--run" in command.split()
+        result = await storage.run_memory_sleep(chat_id, dry_run=not run)
+        mode = "applied" if run else "preview"
+        print_colored(f"Memory sleep {mode}: {result}", Colors.GREEN)
+        if not run:
+            print_colored("Add --run to apply these changes.", Colors.BLUE)
+        return
+
+    print_colored("Usage: /memory [status|search <query>|conflicts|sleep [--run]]", Colors.YELLOW)
 
 
 async def main():

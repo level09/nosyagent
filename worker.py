@@ -145,11 +145,32 @@ async def generate_digest(ctx: Dict[str, Any]) -> str:
     return "digest complete"
 
 
+# === Memory sleep consolidation ===
+
+async def memory_sleep(ctx: Dict[str, Any]) -> str:
+    """Run deterministic memory lifecycle maintenance for all active users."""
+    storage, config = get_storage()
+    logger.info("memory_sleep: starting")
+
+    summaries = []
+    for chat_id in config.ALLOWED_CHAT_IDS:
+        chat_id_str = str(chat_id)
+        try:
+            result = await storage.run_memory_sleep(chat_id_str, dry_run=False)
+            summaries.append(f"{chat_id_str}: {result}")
+            logger.info(f"memory_sleep: {chat_id_str} {result}")
+        except Exception as e:
+            logger.error(f"memory_sleep: failed for {chat_id_str}: {e}")
+
+    return "memory sleep complete: " + "; ".join(summaries)
+
+
 # === Worker config ===
 
 class WorkerSettings:
-    functions = [send_reminder]
+    functions = [send_reminder, memory_sleep]
     cron_jobs = [
+        cron(memory_sleep, hour=6, minute=30),
         cron(generate_digest, hour=7, minute=0),  # 7am UTC = 8am CET
     ]
     redis_settings = REDIS_SETTINGS
