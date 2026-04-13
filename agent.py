@@ -1,13 +1,18 @@
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
+import re
+import socket
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
+from urllib.parse import urljoin, urlparse
 
 import anthropic
 import dateparser
+import httpx
 
 from companion import CompanionService
 from config import Config
@@ -105,6 +110,17 @@ class AIAgent:
                         "when": {"type": "string", "description": "Time expression (e.g. 'in 5 mins', 'friday at noon')."},
                     },
                     "required": ["message", "when"],
+                },
+            },
+            {
+                "name": "web_fetch",
+                "description": "Fetch and read a specific HTTP/HTTPS URL. Use when the user gives a link to inspect.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "HTTP or HTTPS URL to fetch."},
+                    },
+                    "required": ["url"],
                 },
             },
         ]
@@ -313,12 +329,17 @@ class AIAgent:
                 image_format = "image/png"
             elif image_bytes.startswith(b"GIF"):
                 image_format = "image/gif"
-            elif image_bytes.startswith(b"WEBP", 8):
+            elif image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
                 image_format = "image/webp"
+
+            image_task = (
+                "For this attached image: first OCR/transcribe any visible text exactly. "
+                "Then answer the user's request. If external facts are needed, use tools."
+            )
 
             message_content = [
                 {"type": "image", "source": {"type": "base64", "media_type": image_format, "data": image_base64}},
-                {"type": "text", "text": built_message},
+                {"type": "text", "text": f"{image_task}\n\n{built_message}"},
             ]
 
             messages = [{"role": "user", "content": message_content}]
@@ -353,6 +374,7 @@ class AIAgent:
         "read_brain_file": "checking memory",
         "query_entities": "looking up facts",
         "schedule_message": "setting reminder",
+        "web_fetch": "fetching a page",
     }
 
     async def stream_response(self, chat_id: str, user_message: str, on_status=None) -> AsyncGenerator[str, None]:
@@ -440,7 +462,10 @@ class AIAgent:
     ) -> AsyncGenerator[str, None]:
         try:
             yield "Analyzing image..."
-            response, _ = await self.process_message_with_image(str(chat_id), message, image_bytes)
+            full_message = message
+            if context:
+                full_message = f"{context}\n\n{message}"
+            response, _ = await self.process_message_with_image(str(chat_id), full_message, image_bytes)
             yield response
         except Exception as e:
             logger.error(f"stream_chat_with_image error: {e}")
@@ -454,7 +479,9 @@ class AIAgent:
             "- Reminders: schedule_message, confirm briefly\n"
             "- Memory: update_brain_file for lasting insights only\n"
             "- Facts: query_entities for quick structured lookups\n"
-            "- Search: web_search, cite sources briefly"
+            "- Search: web_search, cite sources briefly\n"
+            "- Fetch: web_fetch for specific URLs\n"
+            "- Vision/OCR: read attached images directly and transcribe visible text"
         )
         if self.notion:
             tools += "\n- Notion: search, read, create, and append to the user's Notion workspace"
@@ -625,6 +652,11 @@ class AIAgent:
                     "success": success,
                 }
 
+            elif tool_name == "web_fetch":
+                url = tool_input.get("url", "")
+                content = await self._fetch_url(url)
+                return {"tool_name": tool_name, "content": content, "success": True}
+
             elif tool_name == "notion_search":
                 query = tool_input.get("query", "")
                 results = await self.notion.search(query, limit=5)
@@ -663,6 +695,85 @@ class AIAgent:
         except Exception as e:
             logger.error(f"tool {tool_name} failed: {e}")
             return {"tool_name": tool_name, "content": "Action failed. Please try again.", "success": False}
+
+    async def _fetch_url(self, url: str) -> str:
+        current_url = url.strip()
+        parsed = urlparse(current_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return "Invalid URL. Only http:// and https:// links are supported."
+        if await self._is_blocked_fetch_host(parsed.hostname):
+            return "Blocked private or local URL."
+
+        async with httpx.AsyncClient(follow_redirects=False, timeout=12.0) as client:
+            response = None
+            for _ in range(5):
+                response = await client.get(
+                    current_url,
+                    headers={"User-Agent": "NosyAgent/1.0 (+https://nosyagent.com)"},
+                )
+                if response.status_code not in {301, 302, 303, 307, 308}:
+                    break
+                location = response.headers.get("location")
+                if not location:
+                    break
+                next_url = urljoin(str(response.url), location)
+                parsed_next = urlparse(next_url)
+                if parsed_next.scheme not in {"http", "https"} or not parsed_next.netloc:
+                    return "Blocked redirect to an unsupported URL."
+                if await self._is_blocked_fetch_host(parsed_next.hostname):
+                    return "Blocked redirect to a private or local URL."
+                current_url = next_url
+            else:
+                return "Too many redirects."
+
+        if response is None:
+            return "Fetch failed."
+        content_type = response.headers.get("content-type", "unknown")
+        text = response.text
+        if "html" in content_type:
+            text = re.sub(r"(?is)<(script|style).*?</\1>", " ", text)
+            text = re.sub(r"(?s)<[^>]+>", " ", text)
+            text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 6000:
+            text = text[:6000] + "\n\n... (truncated)"
+        return (
+            f"URL: {response.url}\n"
+            f"Status: {response.status_code}\n"
+            f"Content-Type: {content_type}\n\n"
+            f"{text}"
+        )
+
+    async def _is_blocked_fetch_host(self, hostname: Optional[str]) -> bool:
+        if not hostname:
+            return True
+
+        host = hostname.rstrip(".").lower()
+        if host == "localhost" or host.endswith(".localhost"):
+            return True
+
+        def is_blocked_ip(ip_text: str) -> bool:
+            try:
+                ip = ipaddress.ip_address(ip_text)
+            except ValueError:
+                return False
+            return (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+                or ip.is_unspecified
+            )
+
+        if is_blocked_ip(host):
+            return True
+
+        try:
+            infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+        except socket.gaierror:
+            return False
+
+        return any(is_blocked_ip(info[4][0]) for info in infos)
 
     async def _extract_entities(self, chat_id: str, brain_content: str):
         if not brain_content.strip():

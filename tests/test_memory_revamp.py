@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent import AIAgent
 from cli import handle_memory_command
+from router import Router
 from storage import Storage
 
 WEAK_STRENGTH = 0.2
@@ -168,3 +169,22 @@ def test_cli_memory_command_status(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "Memory items: 1" in captured.out
     assert "semantic/observed" in captured.out
+
+
+def test_router_forces_ocr_and_research_to_complex():
+    router = Router(MockConfig())
+
+    assert asyncio.run(router.classify("Ocr the image")) == "complex"
+    result = asyncio.run(router.classify("research this https://example.com"))
+    assert result == "complex"
+
+
+def test_web_fetch_blocks_local_and_private_urls():
+    async def run():
+        agent = AIAgent(MockConfig(), MockStorage())
+
+        assert "Blocked" in await agent._fetch_url("http://localhost:8000")  # noqa: SLF001
+        assert "Blocked" in await agent._fetch_url("http://169.254.169.254")  # noqa: SLF001
+        assert "Invalid URL" in await agent._fetch_url("file:///etc/passwd")  # noqa: SLF001
+
+    asyncio.run(run())

@@ -22,6 +22,26 @@ SIMPLE_MESSAGES = {
 
 SIMPLE_EMOJI = {"👍", "🙏", "❤️", "👌", "😂", "🤣", "💪", "🔥", "✅", "👋", "😊", "🙌"}
 
+COMPLEX_KEYWORDS = {
+    "ocr",
+    "image",
+    "photo",
+    "picture",
+    "screenshot",
+    "attached",
+    "attachment",
+    "read this",
+    "read the",
+    "transcribe",
+    "extract text",
+    "web",
+    "search",
+    "research",
+    "fetch",
+    "http://",
+    "https://",
+}
+
 
 class Router:
     def __init__(self, config: Config):
@@ -38,6 +58,9 @@ class Router:
         return False
 
     async def classify(self, message: str) -> str:
+        normalized = message.strip().lower()
+        if any(keyword in normalized for keyword in COMPLEX_KEYWORDS):
+            return "complex"
         if self._is_simple(message):
             return "simple"
         # Short casual messages without questions don't need tools/memory

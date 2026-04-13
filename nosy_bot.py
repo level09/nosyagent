@@ -34,6 +34,21 @@ logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+RECENT_PHOTOS = {}
+RECENT_PHOTO_TTL_SECONDS = 600
+IMAGE_FOLLOWUP_TERMS = {
+    "ocr",
+    "image",
+    "photo",
+    "picture",
+    "screenshot",
+    "attached",
+    "transcribe",
+    "read the image",
+    "read this image",
+    "read the photo",
+}
+
 
 # Using chatgpt-md-converter library for proper Telegram HTML formatting
 
@@ -45,6 +60,29 @@ def convert_markdown_to_html(text):
     except Exception as e:
         logger.warning(f"Markdown conversion failed: {e}, using plain text")
         return text
+
+
+def split_telegram_chunks(text: str, limit: int) -> list[str]:
+    """Split long Telegram messages without hard truncating."""
+    if len(text) <= limit:
+        return [text]
+
+    chunks = []
+    current = ""
+    for block in text.split("\n\n"):
+        candidate = f"{current}\n\n{block}".strip() if current else block
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        while len(block) > limit:
+            chunks.append(block[:limit])
+            block = block[limit:]
+        current = block
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def validate_input(text: str, chat_id: int) -> bool:
@@ -93,25 +131,45 @@ def mark_update_processed(update_id: int):
 
 
 async def send_or_edit_message(update, thinking_message, text):
-    """Send or edit message with single fallback to plain text"""
-    # Validate and truncate if needed
-    if len(text) > config.TELEGRAM_MAX_LENGTH:
-        text = text[:config.TELEGRAM_MAX_LENGTH-6] + "..."
-    
-    html_text = convert_markdown_to_html(text)
-    
-    try:
-        if thinking_message is not None:
-            await thinking_message.edit_text(html_text, parse_mode=ParseMode.HTML)
-        else:
-            await update.message.reply_text(html_text, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        logger.warning(f"HTML message failed: {e}, sending as plain text")
-        # Single fallback: send as plain text
-        if thinking_message is not None:
-            await thinking_message.edit_text(text)
-        else:
-            await update.message.reply_text(text)
+    """Send or edit message with chunking and plain-text fallback."""
+    chunks = split_telegram_chunks(text, config.TELEGRAM_MAX_LENGTH - 96)
+
+    for index, chunk in enumerate(chunks):
+        html_text = convert_markdown_to_html(chunk)
+        try:
+            if thinking_message is not None and index == 0:
+                await thinking_message.edit_text(html_text, parse_mode=ParseMode.HTML)
+            else:
+                await update.message.reply_text(html_text, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.warning(f"HTML message failed: {e}, sending plain text chunk")
+            if thinking_message is not None and index == 0:
+                await thinking_message.edit_text(chunk)
+            else:
+                await update.message.reply_text(chunk)
+
+
+def is_image_followup(text: str) -> bool:
+    lowered = text.lower()
+    return any(term in lowered for term in IMAGE_FOLLOWUP_TERMS)
+
+
+def remember_recent_photo(chat_id: int, image_bytes: bytes, context: str):
+    RECENT_PHOTOS[chat_id] = {
+        "bytes": bytes(image_bytes),
+        "context": context,
+        "stored_at": time.time(),
+    }
+
+
+def get_recent_photo(chat_id: int):
+    record = RECENT_PHOTOS.get(chat_id)
+    if not record:
+        return None
+    if time.time() - record["stored_at"] > RECENT_PHOTO_TTL_SECONDS:
+        RECENT_PHOTOS.pop(chat_id, None)
+        return None
+    return record
 
 
 # Initialize config and validate
@@ -418,6 +476,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         logger.info(f"Message from {username} ({chat_id}): {user_text[:80]}")
 
+        if is_image_followup(user_text):
+            recent_photo = get_recent_photo(chat_id)
+            if recent_photo:
+                thinking_message = await update.message.reply_text("🤔 Reading image...")
+                response_chunks = []
+                stream = agent.stream_chat_with_image(
+                    user_text,
+                    chat_id,
+                    recent_photo["bytes"],
+                    recent_photo["context"],
+                )
+                async for chunk in stream:
+                    response_chunks.append(chunk)
+                final_response = "".join(response_chunks[1:]).lstrip("\n")
+                if not final_response.strip():
+                    final_response = "I couldn't read useful text from that image."
+                await send_or_edit_message(update, thinking_message, final_response)
+                return
+
         # Route: simple messages go to Haiku, complex to Sonnet
         classification = await router.classify(user_text)
         logger.debug(f"Classified as {classification}: {user_text[:50]}")
@@ -512,7 +589,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             context = f"Photo received at: {utc_time}"
 
         # Create message for agent (combine caption with image indicator)
-        user_message = f"[IMAGE ATTACHED]{': ' + caption_text if caption_text else ''}"
+        remember_recent_photo(chat_id, photo_bytes, context)
+        if caption_text:
+            user_message = (
+                f"[IMAGE ATTACHED]\n"
+                f"User request: {caption_text}\n"
+                "OCR any visible text exactly before answering when relevant."
+            )
+        else:
+            user_message = (
+                "[IMAGE ATTACHED]\n"
+                "Task: OCR any visible text exactly, then briefly describe the image."
+            )
 
         # Get agent response with image
         response_chunks = []

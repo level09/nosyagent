@@ -43,12 +43,17 @@ Background thinking about recent conversations. Suggests things you might be mis
 ### Telegram Native
 This isn't a web app you forget to check. It lives in Telegram - super convenient, always in your pocket. Send it messages and images. Chat with your AI like you'd chat with a friend.
 
+Images are handled as first-class context. NosyAgent can OCR attached screenshots/photos, remember the most recent image briefly for follow-up prompts like "read the image", and fall back to safe chunked Telegram messages when Markdown/HTML formatting fails.
+
+### Web Tools
+Complex requests can use web search for current information and a guarded URL fetch tool for specific links. Fetch blocks local/private network targets and unsafe redirects.
+
 ## Tech Stack
 
 - Python + Claude API (Anthropic)
 - SQLite for storage + automatic brain versioning
 - SQLite structured memory + LanceDB semantic recall
-- Telegram webhook bot
+- Telegram webhook bot with draft streaming, HTML fallback, image OCR, and long-message chunking
 - ARQ + Redis for scheduled reminders
 
 ## Quick Start
