@@ -89,19 +89,19 @@ def validate_input(text: str, chat_id: int) -> bool:
     """Validate user input for security and limits"""
     if not text or not text.strip():
         return False
-    
+
     # Length limits
     if len(text) > config.MAX_MESSAGE_LENGTH:
         logger.warning(f"Message too long from chat {chat_id}: {len(text)} chars")
         return False
-    
+
     # Basic security: no suspicious patterns
-    suspicious_patterns = ['<script', '<?php', 'javascript:', 'data:']
+    suspicious_patterns = ["<script", "<?php", "javascript:", "data:"]
     text_lower = text.lower()
     if any(pattern in text_lower for pattern in suspicious_patterns):
         logger.warning(f"Suspicious content detected from chat {chat_id}")
         return False
-    
+
     return True
 
 
@@ -109,12 +109,13 @@ def clean_expired_updates():
     """Remove expired update IDs from cache to prevent memory bloat"""
     current_time = time.time()
     expired_keys = [
-        update_id for update_id, timestamp in processed_updates.items()
+        update_id
+        for update_id, timestamp in processed_updates.items()
         if current_time - timestamp > CACHE_EXPIRY_SECONDS
     ]
     for key in expired_keys:
         del processed_updates[key]
-    
+
     if expired_keys:
         logger.debug(f"Cleaned {len(expired_keys)} expired update IDs from cache")
 
@@ -187,8 +188,12 @@ companion_service = CompanionService(
 )
 
 # Initialize agent with optional semantic memory
-semantic_memory_path = config.SEMANTIC_MEMORY_PATH if config.SEMANTIC_MEMORY_ENABLED else None
-agent = NosyAgent(config, storage, companion_service, semantic_memory_path=semantic_memory_path)
+semantic_memory_path = (
+    config.SEMANTIC_MEMORY_PATH if config.SEMANTIC_MEMORY_ENABLED else None
+)
+agent = NosyAgent(
+    config, storage, companion_service, semantic_memory_path=semantic_memory_path
+)
 
 # Router for smart message classification
 router = Router(config)
@@ -356,6 +361,82 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("\n".join(lines))
         return
 
+    if action == "review":
+        review = await storage.get_memory_review(chat_id)
+        memories = review["memories"]
+        conflicts = review["conflicts"]
+        if not memories and not conflicts:
+            await update.message.reply_text("No memories need review.")
+            return
+
+        lines = ["Review these memories:"]
+        for memory in memories:
+            lines.append(
+                f"#{memory.id} [{memory.confidence}/{memory.layer}] "
+                f"strength={memory.strength:.2f}: {memory.content}"
+            )
+        for conflict in conflicts:
+            lines.append(
+                f"Conflict #{conflict['id']}: {conflict['reason']}\n"
+                f"A: {conflict['memory_a']}\n"
+                f"B: {conflict['memory_b']}"
+            )
+        lines.append(
+            "Actions: /memory confirm <id> | stale <id> | forget <id> | "
+            "correct <id> <text>"
+        )
+        await update.message.reply_text("\n\n".join(lines))
+        return
+
+    if action in {"confirm", "stale", "forget"}:
+        if len(args) < 2 or not args[1].isdigit():
+            await update.message.reply_text(f"Usage: /memory {action} <id>")
+            return
+        memory_id = int(args[1])
+        if action == "confirm":
+            ok = await storage.confirm_memory_item(chat_id, memory_id)
+            text = (
+                f"Confirmed memory #{memory_id}"
+                if ok
+                else f"Memory #{memory_id} not found"
+            )
+        elif action == "stale":
+            ok = await storage.stale_memory_item(chat_id, memory_id)
+            text = (
+                f"Staled memory #{memory_id}"
+                if ok
+                else f"Memory #{memory_id} not found"
+            )
+        else:
+            ok = await storage.forget_memory_item(chat_id, memory_id)
+            text = (
+                f"Forgot memory #{memory_id}"
+                if ok
+                else f"Memory #{memory_id} not found"
+            )
+        await update.message.reply_text(text)
+        return
+
+    if action == "correct":
+        if len(args) < 3 or not args[1].isdigit():
+            await update.message.reply_text(
+                "Usage: /memory correct <id> <corrected text>"
+            )
+            return
+        memory_id = int(args[1])
+        replacement_id = await storage.correct_memory_item(
+            chat_id,
+            memory_id,
+            " ".join(args[2:]).strip(),
+        )
+        if replacement_id:
+            await update.message.reply_text(
+                f"Corrected memory #{memory_id} -> #{replacement_id}"
+            )
+        else:
+            await update.message.reply_text(f"Memory #{memory_id} not found")
+        return
+
     if action == "search":
         query = " ".join(args[1:]).strip()
         if not query:
@@ -399,10 +480,10 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(text)
         return
 
-    await update.message.reply_text("Usage: /memory [status|search <query>|conflicts|sleep [--run]]")
-
-
-
+    await update.message.reply_text(
+        "Usage: /memory [status|review|confirm <id>|stale <id>|forget <id>|"
+        "correct <id> <text>|search <query>|conflicts|sleep [--run]]"
+    )
 
 
 async def stream_to_draft(bot, chat_id: int, agent_stream) -> str:
@@ -444,7 +525,9 @@ def make_status_callback(bot, chat_id: int):
         statuses.append(label)
         status_text = " > ".join(statuses) + "..."
         try:
-            await bot.send_message_draft(chat_id=chat_id, draft_id=draft_id, text=status_text)
+            await bot.send_message_draft(
+                chat_id=chat_id, draft_id=draft_id, text=status_text
+            )
         except Exception:
             pass
 
@@ -466,7 +549,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         if chat_id not in ALLOWED_CHAT_IDS:
-            logger.warning(f"Unauthorized access from chat_id: {chat_id}, user: {username}")
+            logger.warning(
+                f"Unauthorized access from chat_id: {chat_id}, user: {username}"
+            )
             await update.message.reply_text(
                 "🚫 Access Restricted\n\n"
                 "This AI agent is currently available only to specific members. "
@@ -479,7 +564,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if is_image_followup(user_text):
             recent_photo = get_recent_photo(chat_id)
             if recent_photo:
-                thinking_message = await update.message.reply_text("🤔 Reading image...")
+                thinking_message = await update.message.reply_text(
+                    "🤔 Reading image..."
+                )
                 response_chunks = []
                 stream = agent.stream_chat_with_image(
                     user_text,
@@ -526,9 +613,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.debug(f"Response sent for chat {chat_id}")
 
     except Exception as e:
-        logger.error(f"Error processing message for chat {update.effective_chat.id}: {e}")
+        logger.error(
+            f"Error processing message for chat {update.effective_chat.id}: {e}"
+        )
         try:
-            await update.message.reply_text("Sorry, I encountered an error. Please try again.")
+            await update.message.reply_text(
+                "Sorry, I encountered an error. Please try again."
+            )
         except Exception as send_error:
             logger.error(f"Failed to send error message: {send_error}")
 
@@ -539,7 +630,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         username = update.effective_user.username or "Unknown"
-        
+
         # Get message timestamp
         message_timestamp = None
         if update.message and update.message.date:
@@ -572,16 +663,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         # Get the largest photo (highest resolution)
         photo = update.message.photo[-1]
-        
+
         # Download the photo
         photo_file = await photo.get_file()
         photo_bytes = await photo_file.download_as_bytearray()
-        
+
         logger.debug(f"Downloaded photo: {len(photo_bytes)} bytes")
 
         # Get caption text if any
         caption_text = update.message.caption or ""
-        
+
         # Build context with timestamp if available
         context = ""
         if message_timestamp:
@@ -604,7 +695,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         # Get agent response with image
         response_chunks = []
-        async for chunk in agent.stream_chat_with_image(user_message, chat_id, photo_bytes, context):
+        async for chunk in agent.stream_chat_with_image(
+            user_message, chat_id, photo_bytes, context
+        ):
             response_chunks.append(chunk)
             logger.debug(f"Received photo chunk: {chunk[:100]!r}")
 
@@ -636,7 +729,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         logger.error(f"Error processing photo for chat {chat_id}: {e}")
         logger.error(f"Error type: {type(e).__name__}")
-        error_message = "Sorry, I encountered an error processing your image. Please try again."
+        error_message = (
+            "Sorry, I encountered an error processing your image. Please try again."
+        )
         try:
             await send_or_edit_message(update, thinking_message, error_message)
         except Exception as send_error:
@@ -678,18 +773,20 @@ async def webhook(request: Request):
     try:
         logger.info(f"Webhook received from {request.client.host}")
         req = await request.json()
-        
+
         # Check for duplicate updates before processing
-        update_id = req.get('update_id')
+        update_id = req.get("update_id")
         if update_id is not None:
             if is_duplicate_update(update_id):
-                logger.info(f"⚠️ Duplicate update {update_id} ignored - already processed")
+                logger.info(
+                    f"⚠️ Duplicate update {update_id} ignored - already processed"
+                )
                 return Response(status_code=HTTPStatus.OK)
-            
+
             # Mark as processed immediately to prevent race conditions
             mark_update_processed(update_id)
             logger.debug(f"Processing new update {update_id}")
-        
+
         logger.debug(f"Webhook payload: {json.dumps(req, indent=2)}")
         update = Update.de_json(req, ptb.bot)
         logger.debug(f"Successfully parsed update: {update}")

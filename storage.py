@@ -14,12 +14,14 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional
 
+
 @dataclass
 class Message:
     chat_id: str
     user_message: str
     agent_response: str
     timestamp: datetime
+
 
 @dataclass
 class Reminder:
@@ -81,27 +83,28 @@ class MemoryConflict:
     resolved: bool = False
     created_at: Optional[datetime] = None
 
+
 class Storage:
     """
     Simple SQLite storage for NosyAgent
-    
+
     Schema:
     - conversations: chat_id FK, user/agent messages
     - brain: current brain content per user (chat_id FK)
     - brain_history: versioned brain history (chat_id FK)
     - reminders: scheduled reminders (chat_id FK)
     """
-    
+
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._init_db()
-    
+
     def _init_db(self):
         """Initialize clean SQLite schema"""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
-            
+
             # Conversations - keep existing production table structure
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
@@ -112,8 +115,10 @@ class Storage:
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_id, timestamp)")
-            
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_id, timestamp)"
+            )
+
             # Brain - current content per user
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS brain (
@@ -122,7 +127,7 @@ class Storage:
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
+
             # Brain history - version history per user
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS brain_history (
@@ -134,8 +139,10 @@ class Storage:
                     FOREIGN KEY (chat_id) REFERENCES brain(chat_id)
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_history_chat ON brain_history(chat_id, created_at)")
-            
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_brain_history_chat ON brain_history(chat_id, created_at)"
+            )
+
             # Reminders - scheduled tasks per user
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS reminders (
@@ -147,8 +154,12 @@ class Storage:
                     delivered BOOLEAN DEFAULT FALSE
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_schedule ON reminders(scheduled_time, delivered)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_chat ON reminders(chat_id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reminders_schedule ON reminders(scheduled_time, delivered)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reminders_chat ON reminders(chat_id)"
+            )
 
             # Companion preferences per user
             conn.execute("""
@@ -179,7 +190,9 @@ class Storage:
                     line_count INTEGER DEFAULT 0
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_companion_metrics_chat ON companion_metrics(chat_id, shown_at)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_companion_metrics_chat ON companion_metrics(chat_id, shown_at)"
+            )
 
             # Entity triples for structured fact lookup
             conn.execute("""
@@ -192,8 +205,12 @@ class Storage:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_chat ON entities(chat_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_lookup ON entities(chat_id, predicate)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entities_chat ON entities(chat_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entities_lookup ON entities(chat_id, predicate)"
+            )
 
             # Structured memory lifecycle. The brain remains the readable summary;
             # memory_items is the durable, queryable source of truth for v1.
@@ -216,9 +233,15 @@ class Storage:
                     FOREIGN KEY (supersedes_id) REFERENCES memory_items(id)
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_chat ON memory_items(chat_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_layer ON memory_items(chat_id, layer)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_confidence ON memory_items(chat_id, confidence)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_items_chat ON memory_items(chat_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_items_layer ON memory_items(chat_id, layer)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_items_confidence ON memory_items(chat_id, confidence)"
+            )
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS memory_conflicts (
@@ -234,26 +257,32 @@ class Storage:
                     FOREIGN KEY (memory_b_id) REFERENCES memory_items(id)
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_conflicts_chat ON memory_conflicts(chat_id, resolved)")
-    
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_conflicts_chat ON memory_conflicts(chat_id, resolved)"
+            )
+
     # === CONVERSATIONS ===
-    
-    async def store_conversation(self, chat_id: str, user_message: str, agent_response: str):
+
+    async def store_conversation(
+        self, chat_id: str, user_message: str, agent_response: str
+    ):
         """Store conversation exchange"""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "INSERT INTO messages (chat_id, user, agent) VALUES (?, ?, ?)",
-                (chat_id, user_message, agent_response)
+                (chat_id, user_message, agent_response),
             )
             await db.commit()
-    
-    async def get_recent_conversations(self, chat_id: str, limit: int = 10) -> List[Message]:
+
+    async def get_recent_conversations(
+        self, chat_id: str, limit: int = 10
+    ) -> List[Message]:
         """Get recent conversations for context"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "SELECT user, agent, timestamp FROM messages WHERE chat_id = ? "
                 "ORDER BY timestamp DESC LIMIT ?",
-                (chat_id, limit)
+                (chat_id, limit),
             )
             rows = await cursor.fetchall()
             return [
@@ -266,7 +295,7 @@ class Storage:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "SELECT user FROM messages WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?",
-                (chat_id, limit)
+                (chat_id, limit),
             )
             rows = await cursor.fetchall()
             return [row[0] for row in rows]
@@ -293,7 +322,7 @@ class Storage:
                 "SELECT chat_id, companion_level, nudge_frequency, quiet_hours_start, quiet_hours_end, "
                 "last_reflection_at, short_reply_streak, reflections_paused_until, last_template_id, last_nudge_at "
                 "FROM user_settings WHERE chat_id = ?",
-                (chat_id,)
+                (chat_id,),
             )
             row = await cursor.fetchone()
 
@@ -361,7 +390,8 @@ class Storage:
                 """,
                 (
                     metric.chat_id,
-                    self._to_iso(metric.shown_at) or datetime.utcnow().replace(microsecond=0).isoformat(),
+                    self._to_iso(metric.shown_at)
+                    or datetime.utcnow().replace(microsecond=0).isoformat(),
                     metric.template_id,
                     1 if metric.muted else 0,
                     metric.line_count,
@@ -370,7 +400,9 @@ class Storage:
             await db.commit()
             return cursor.lastrowid
 
-    async def get_recent_companion_metrics(self, chat_id: str, limit: int = 20) -> List[CompanionMetric]:
+    async def get_recent_companion_metrics(
+        self, chat_id: str, limit: int = 20
+    ) -> List[CompanionMetric]:
         """Return recent companion reflection events for diagnostics."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = sqlite3.Row
@@ -398,23 +430,22 @@ class Storage:
                 )
             )
         return metrics
-    
+
     # === BRAIN (with automatic versioning) ===
-    
+
     async def read_user_context(self, chat_id: str) -> str:
         """Read current brain content for user"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "SELECT content FROM brain WHERE chat_id = ?",
-                (chat_id,)
+                "SELECT content FROM brain WHERE chat_id = ?", (chat_id,)
             )
             row = await cursor.fetchone()
             return row[0] if row else ""
-    
+
     async def update_user_context(self, chat_id: str, content: str, reason: str = None):
         """
         Update brain content with automatic versioning
-        
+
         Process:
         1. Save current content to brain_history
         2. Update brain with new content
@@ -422,43 +453,46 @@ class Storage:
         async with aiosqlite.connect(self.db_path) as db:
             # Get current content
             cursor = await db.execute(
-                "SELECT content FROM brain WHERE chat_id = ?",
-                (chat_id,)
+                "SELECT content FROM brain WHERE chat_id = ?", (chat_id,)
             )
             row = await cursor.fetchone()
             current_content = row[0] if row else ""
-            
+
             # Only update if content actually changed
             if current_content.strip() != content.strip():
                 # Save current to history (if exists)
                 if current_content:
                     await db.execute(
                         "INSERT INTO brain_history (chat_id, content, reason) VALUES (?, ?, ?)",
-                        (chat_id, current_content, reason or "Auto-versioned before update")
+                        (
+                            chat_id,
+                            current_content,
+                            reason or "Auto-versioned before update",
+                        ),
                     )
-                
+
                 # Update current brain
                 await db.execute(
                     "INSERT OR REPLACE INTO brain (chat_id, content, updated_at) VALUES (?, ?, datetime('now'))",
-                    (chat_id, content)
+                    (chat_id, content),
                 )
-                
+
                 await db.commit()
-    
+
     async def get_brain_history(self, chat_id: str, limit: int = 10) -> List[dict]:
         """Get brain version history for user"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "SELECT content, reason, created_at FROM brain_history "
                 "WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?",
-                (chat_id, limit)
+                (chat_id, limit),
             )
             rows = await cursor.fetchall()
             return [
                 {
                     "content": row[0],
                     "reason": row[1],
-                    "created_at": datetime.fromisoformat(row[2])
+                    "created_at": datetime.fromisoformat(row[2]),
                 }
                 for row in rows
             ]
@@ -475,9 +509,7 @@ class Storage:
     @staticmethod
     def _tokenize_memory_query(query: str) -> set[str]:
         return {
-            term
-            for term in re.findall(r"[a-z0-9_]+", query.lower())
-            if len(term) > 2
+            term for term in re.findall(r"[a-z0-9_]+", query.lower()) if len(term) > 2
         }
 
     @staticmethod
@@ -523,7 +555,9 @@ class Storage:
         if confidence not in {"verified", "observed", "inferred", "stale"}:
             raise ValueError("confidence must be verified|observed|inferred|stale")
 
-        cleaned_tags = sorted({tag.strip().lower() for tag in tags or [] if tag.strip()})
+        cleaned_tags = sorted(
+            {tag.strip().lower() for tag in tags or [] if tag.strip()}
+        )
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 """
@@ -620,7 +654,9 @@ class Storage:
         results = [item for _, item in scored[:limit]]
         if strengthen and results:
             await self.strengthen_memory_items([item.id for item in results if item.id])
-            results = await self.get_memory_items_by_ids([item.id for item in results if item.id])
+            results = await self.get_memory_items_by_ids(
+                [item.id for item in results if item.id]
+            )
         return results
 
     async def get_memory_items_by_ids(self, ids: List[int]) -> List[MemoryItem]:
@@ -721,6 +757,131 @@ class Storage:
             for row in rows
         ]
 
+    async def get_memory_review(self, chat_id: str, limit: int = 5) -> dict:
+        """Return memories and conflicts worth explicit user review."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = sqlite3.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM memory_items
+                WHERE chat_id = ?
+                  AND confidence IN ('observed', 'inferred')
+                ORDER BY
+                  CASE confidence WHEN 'inferred' THEN 0 ELSE 1 END,
+                  updated_at DESC
+                LIMIT ?
+                """,
+                (chat_id, limit),
+            )
+            rows = await cursor.fetchall()
+
+        return {
+            "memories": [self._memory_from_row(row) for row in rows],
+            "conflicts": await self.get_memory_conflicts(chat_id, limit=limit),
+        }
+
+    async def confirm_memory_item(self, chat_id: str, memory_id: int) -> bool:
+        """Mark a memory as user-verified."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE memory_items
+                SET confidence = 'verified',
+                    strength = MAX(strength, 1.5),
+                    half_life_days = MAX(half_life_days, 30.0),
+                    updated_at = datetime('now')
+                WHERE chat_id = ? AND id = ? AND confidence != 'stale'
+                """,
+                (chat_id, memory_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def stale_memory_item(self, chat_id: str, memory_id: int) -> bool:
+        """Keep a memory for audit/history but remove it from normal recall."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE memory_items
+                SET confidence = 'stale',
+                    strength = MIN(strength, 0.2),
+                    updated_at = datetime('now')
+                WHERE chat_id = ? AND id = ?
+                """,
+                (chat_id, memory_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def forget_memory_item(self, chat_id: str, memory_id: int) -> bool:
+        """Delete a memory and any unresolved conflict records that reference it."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE memory_items
+                SET supersedes_id = NULL
+                WHERE chat_id = ? AND supersedes_id = ?
+                """,
+                (chat_id, memory_id),
+            )
+            await db.execute(
+                """
+                DELETE FROM memory_conflicts
+                WHERE chat_id = ? AND (memory_a_id = ? OR memory_b_id = ?)
+                """,
+                (chat_id, memory_id, memory_id),
+            )
+            cursor = await db.execute(
+                "DELETE FROM memory_items WHERE chat_id = ? AND id = ?",
+                (chat_id, memory_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def correct_memory_item(
+        self,
+        chat_id: str,
+        memory_id: int,
+        corrected_content: str,
+    ) -> Optional[int]:
+        """Create a verified replacement and stale the original memory."""
+        existing = await self.get_memory_items_by_ids([memory_id])
+        if not existing or existing[0].chat_id != chat_id:
+            return None
+
+        old = existing[0]
+        replacement_id = await self.store_memory_item(
+            chat_id,
+            corrected_content,
+            layer=old.layer,
+            tags=old.tags,
+            confidence="verified",
+            strength=max(old.strength, 1.5),
+            half_life_days=max(old.half_life_days, 30.0),
+        )
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE memory_items
+                SET confidence = 'stale',
+                    strength = MIN(strength, 0.2),
+                    supersedes_id = ?,
+                    updated_at = datetime('now')
+                WHERE chat_id = ? AND id = ?
+                """,
+                (replacement_id, chat_id, memory_id),
+            )
+            await db.execute(
+                """
+                UPDATE memory_conflicts
+                SET resolved = 1
+                WHERE chat_id = ? AND (memory_a_id = ? OR memory_b_id = ?)
+                """,
+                (chat_id, memory_id, memory_id),
+            )
+            await db.commit()
+        return replacement_id
+
     async def run_memory_sleep(self, chat_id: str, dry_run: bool = False) -> dict:
         """Consolidate memory deterministically: decay, stale, merge, promote, conflict-scan."""
         items = await self.list_memory_items(chat_id, limit=1000, include_stale=True)
@@ -736,9 +897,13 @@ class Storage:
                 continue
             last_activity = item.last_retrieved_at or item.updated_at or item.created_at
             age_days = max((now - last_activity).total_seconds() / 86400, 0.0)
-            decayed_strength = item.strength * math.pow(0.5, age_days / max(item.half_life_days, 1.0))
+            decayed_strength = item.strength * math.pow(
+                0.5, age_days / max(item.half_life_days, 1.0)
+            )
             new_confidence = item.confidence
-            if item.confidence != "stale" and (decayed_strength < 0.25 or age_days >= 30):
+            if item.confidence != "stale" and (
+                decayed_strength < 0.25 or age_days >= 30
+            ):
                 new_confidence = "stale"
                 stale_ids.add(item.id)
             updates.append((max(decayed_strength, 0.0), new_confidence, item.id))
@@ -793,7 +958,13 @@ class Storage:
                         if existing.created_at <= item.created_at
                         else (item, existing)
                     )
-                    conflicts.append((older.id, newer.id, f"conflicting {key}: {existing_value} vs {value}"))
+                    conflicts.append(
+                        (
+                            older.id,
+                            newer.id,
+                            f"conflicting {key}: {existing_value} vs {value}",
+                        )
+                    )
                     fact_index[key] = newer
             else:
                 fact_index[key] = item
@@ -839,7 +1010,11 @@ class Storage:
                         chat_id, layer, content, tags, confidence, strength, half_life_days
                     ) VALUES (?, 'semantic', ?, ?, 'observed', 1.25, 21.0)
                     """,
-                    (chat_id, f"Repeated pattern: {content}", json.dumps(["consolidated"])),
+                    (
+                        chat_id,
+                        f"Repeated pattern: {content}",
+                        json.dumps(["consolidated"]),
+                    ),
                 )
             for a_id, b_id, reason in conflicts:
                 first, second = sorted([a_id, b_id])
@@ -869,19 +1044,21 @@ class Storage:
             if match:
                 return key, match.group(1).strip()
         return None
-    
+
     # === REMINDERS ===
-    
-    async def store_reminder(self, chat_id: str, message: str, scheduled_time: datetime) -> int:
+
+    async def store_reminder(
+        self, chat_id: str, message: str, scheduled_time: datetime
+    ) -> int:
         """Store reminder and return ID"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "INSERT INTO reminders (chat_id, message, scheduled_time) VALUES (?, ?, ?)",
-                (chat_id, message, scheduled_time.isoformat())
+                (chat_id, message, scheduled_time.isoformat()),
             )
             await db.commit()
             return cursor.lastrowid
-    
+
     async def get_pending_reminders(self) -> List[Reminder]:
         """Get all pending reminders"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -897,11 +1074,11 @@ class Storage:
                     message=row[2],
                     scheduled_time=datetime.fromisoformat(row[3]),
                     created_time=datetime.fromisoformat(row[4]),
-                    delivered=row[5]
+                    delivered=row[5],
                 )
                 for row in rows
             ]
-    
+
     # === ENTITIES ===
 
     async def replace_entities(self, chat_id: str, triples: list[dict]):
@@ -945,48 +1122,52 @@ class Storage:
         """Mark reminder as delivered"""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                "UPDATE reminders SET delivered = TRUE WHERE id = ?",
-                (reminder_id,)
+                "UPDATE reminders SET delivered = TRUE WHERE id = ?", (reminder_id,)
             )
             await db.commit()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     """Test the storage system"""
     import asyncio
-    
+
     async def test_storage():
         print("🧪 Testing new storage system...")
-        
+
         # Test with temporary database
         test_db = Path("test_storage.db")
         if test_db.exists():
             test_db.unlink()
-        
+
         storage = Storage(test_db)
         chat_id = "test_user"
-        
+
         # Test brain updates with versioning
         print("\n1. Testing brain with auto-versioning...")
-        await storage.update_user_context(chat_id, "# My Brain\n\nI like coffee.", "Initial brain")
+        await storage.update_user_context(
+            chat_id, "# My Brain\n\nI like coffee.", "Initial brain"
+        )
         content1 = await storage.read_user_context(chat_id)
         print(f"   Initial: {content1[:20]}...")
-        
-        await storage.update_user_context(chat_id, "# My Brain\n\nI like coffee and tea.", "Added tea")
+
+        await storage.update_user_context(
+            chat_id, "# My Brain\n\nI like coffee and tea.", "Added tea"
+        )
         content2 = await storage.read_user_context(chat_id)
         print(f"   Updated: {content2[:20]}...")
-        
+
         # Check history
         history = await storage.get_brain_history(chat_id)
         print(f"   History: {len(history)} versions")
-        
+
         # Test conversations
         print("\n2. Testing conversations...")
         await storage.store_conversation(chat_id, "Hello!", "Hi there!")
         conversations = await storage.get_recent_conversations(chat_id)
         print(f"   Conversations: {len(conversations)}")
-        
+
         # Cleanup
         test_db.unlink()
         print("\n✅ All tests passed!")
-    
+
     asyncio.run(test_storage())

@@ -63,9 +63,7 @@ def test_memory_sleep_marks_old_weak_memory_stale(tmp_path):
         )
 
         old_time = (
-            (datetime.utcnow() - timedelta(days=45))
-            .replace(microsecond=0)
-            .isoformat()
+            (datetime.utcnow() - timedelta(days=45)).replace(microsecond=0).isoformat()
         )
         async with aiosqlite.connect(storage.db_path) as db:
             await db.execute(
@@ -169,6 +167,102 @@ def test_cli_memory_command_status(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "Memory items: 1" in captured.out
     assert "semantic/observed" in captured.out
+
+
+def test_memory_review_surfaces_unverified_memories_and_conflicts(tmp_path):
+    async def run():
+        storage = Storage(tmp_path / "review.db")
+        await storage.store_memory_item(
+            "chat1",
+            "User prefers text commands for memory review",
+            layer="semantic",
+            confidence="observed",
+        )
+        await storage.store_memory_item(
+            "chat1",
+            "User lives in Berlin",
+            layer="semantic",
+        )
+        await storage.store_memory_item(
+            "chat1",
+            "User lives in Warsaw",
+            layer="semantic",
+        )
+        await storage.run_memory_sleep("chat1")
+
+        review = await storage.get_memory_review("chat1")
+
+        assert review["memories"]
+        assert review["memories"][0].confidence == "observed"
+        assert review["conflicts"]
+        assert "conflicting lives_in" in review["conflicts"][0]["reason"]
+
+    asyncio.run(run())
+
+
+def test_memory_review_actions_confirm_forget_and_correct(tmp_path):
+    async def run():
+        storage = Storage(tmp_path / "actions.db")
+        memory_id = await storage.store_memory_item(
+            "chat1",
+            "User prefers verbose answers",
+            layer="semantic",
+            tags=["preference"],
+            confidence="observed",
+        )
+
+        await storage.confirm_memory_item("chat1", memory_id)
+        confirmed = (await storage.get_memory_items_by_ids([memory_id]))[0]
+        assert confirmed.confidence == "verified"
+        assert confirmed.strength >= 1.5
+
+        replacement_id = await storage.correct_memory_item(
+            "chat1",
+            memory_id,
+            "User prefers concise answers",
+        )
+        old, new = await storage.get_memory_items_by_ids([memory_id, replacement_id])
+        assert old.confidence == "stale"
+        assert old.supersedes_id == replacement_id
+        assert new.confidence == "verified"
+        assert new.content == "User prefers concise answers"
+        assert new.tags == ["preference"]
+
+        forgotten = await storage.forget_memory_item("chat1", replacement_id)
+        assert forgotten is True
+        assert await storage.get_memory_items_by_ids([replacement_id]) == []
+
+    asyncio.run(run())
+
+
+def test_cli_memory_review_and_actions(tmp_path, capsys):
+    async def run():
+        storage = Storage(tmp_path / "command-review.db")
+        memory_id = await storage.store_memory_item(
+            "cli_local",
+            "User prefers memory review commands",
+            layer="semantic",
+            confidence="observed",
+        )
+
+        await handle_memory_command(storage, "cli_local", "/memory review")
+        await handle_memory_command(
+            storage, "cli_local", f"/memory confirm {memory_id}"
+        )
+        await handle_memory_command(
+            storage,
+            "cli_local",
+            f"/memory correct {memory_id} User prefers terse memory review commands",
+        )
+        await handle_memory_command(storage, "cli_local", f"/memory forget {memory_id}")
+
+    asyncio.run(run())
+
+    captured = capsys.readouterr()
+    assert "Review these memories" in captured.out
+    assert "Confirmed memory" in captured.out
+    assert "Corrected memory" in captured.out
+    assert "Forgot memory" in captured.out
 
 
 def test_router_forces_ocr_and_research_to_complex():
