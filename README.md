@@ -34,6 +34,9 @@ Ask "what did we discuss about my startup?" and it finds relevant context from w
 ### Structured Memory Lifecycle
 NosyAgent keeps structured memory items in SQLite with confidence labels, decay, retrieval strengthening, and daily consolidation. Useful memories stick because they get recalled or confirmed; stale or contradictory memories lose authority instead of silently steering future responses.
 
+### Memory Review
+Memory is reviewable from Telegram or the CLI. `/memory review` surfaces unverified memories and conflicts; `/memory confirm`, `/memory stale`, `/memory forget`, and `/memory correct` let the user promote, retire, delete, or replace memory items. Corrected memories stale the old version and create a verified replacement.
+
 ### Proactive Reflection
 Background thinking about recent conversations. Suggests things you might be missing. Not just reactive - actually reaches out with useful nudges.
 
@@ -45,6 +48,8 @@ This isn't a web app you forget to check. It lives in Telegram - super convenien
 
 Images are handled as first-class context. NosyAgent can OCR attached screenshots/photos, remember the most recent image briefly for follow-up prompts like "read the image", and fall back to safe chunked Telegram messages when Markdown/HTML formatting fails.
 
+NosyAgent uses Telegram `sendMessageDraft` for progressive AI response streaming. It does not yet integrate Telegram Guest Bots, Bot-to-Bot communication, Managed Bots, or Business/Secretary Bot account automation.
+
 ### Web Tools
 Complex requests can use web search for current information and a guarded URL fetch tool for specific links. Fetch blocks local/private network targets and unsafe redirects.
 
@@ -52,7 +57,7 @@ Complex requests can use web search for current information and a guarded URL fe
 
 - Python + Claude API (Anthropic)
 - SQLite for storage + automatic brain versioning
-- SQLite structured memory + LanceDB semantic recall
+- SQLite structured memory review + LanceDB semantic recall
 - Telegram webhook bot with draft streaming, HTML fallback, image OCR, and long-message chunking
 - ARQ + Redis for scheduled reminders
 
@@ -79,6 +84,23 @@ uv run uvicorn nosy_bot:app --host 0.0.0.0 --port 8000
 
 # For reminders (requires Redis running on localhost:6379)
 uv run arq worker.WorkerSettings
+```
+
+## Telegram Commands
+
+```text
+/mode off|light|standard
+/quiet HH:MM HH:MM
+/nudge off|weekly|standard
+/memory status
+/memory review
+/memory confirm <id>
+/memory stale <id>
+/memory forget <id>
+/memory correct <id> <corrected text>
+/memory search <query>
+/memory conflicts
+/memory sleep [--run]
 ```
 
 ## Roadmap
