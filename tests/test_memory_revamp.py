@@ -130,6 +130,29 @@ def test_memory_sleep_detects_obvious_conflict(tmp_path):
     asyncio.run(run())
 
 
+def test_memory_sleep_allows_multiple_supplements(tmp_path):
+    async def run():
+        storage = Storage(tmp_path / "supplements.db")
+        await storage.store_memory_item(
+            "chat1",
+            "User takes Ashwagandha 600mg",
+            layer="semantic",
+        )
+        await storage.store_memory_item(
+            "chat1",
+            "User takes Zinc 15-30mg",
+            layer="semantic",
+        )
+
+        result = await storage.run_memory_sleep("chat1")
+        conflicts = await storage.get_memory_conflicts("chat1")
+
+        assert result["conflicts"] == 0
+        assert conflicts == []
+
+    asyncio.run(run())
+
+
 def test_structured_memory_prompt_framing():
     agent = AIAgent(MockConfig(), MockStorage())
     created = datetime(2026, 4, 13)

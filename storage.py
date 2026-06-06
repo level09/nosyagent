@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 
+SINGLE_VALUE_MEMORY_FACTS = {"lives_in", "works_at"}
+
+
 @dataclass
 class Message:
     chat_id: str
@@ -735,7 +738,14 @@ class Storage:
             db.row_factory = sqlite3.Row
             cursor = await db.execute(
                 """
-                SELECT c.id, c.reason, c.created_at, a.content AS memory_a, b.content AS memory_b
+                SELECT
+                    c.id,
+                    c.reason,
+                    c.created_at,
+                    a.content AS memory_a,
+                    b.content AS memory_b,
+                    a.confidence AS memory_a_confidence,
+                    b.confidence AS memory_b_confidence
                 FROM memory_conflicts c
                 JOIN memory_items a ON a.id = c.memory_a_id
                 JOIN memory_items b ON b.id = c.memory_b_id
@@ -746,16 +756,27 @@ class Storage:
                 (chat_id, limit),
             )
             rows = await cursor.fetchall()
-        return [
-            {
-                "id": row["id"],
-                "reason": row["reason"],
-                "created_at": row["created_at"],
-                "memory_a": row["memory_a"],
-                "memory_b": row["memory_b"],
-            }
-            for row in rows
-        ]
+
+        conflicts = []
+        for row in rows:
+            if (
+                row["memory_a_confidence"] == "stale"
+                or row["memory_b_confidence"] == "stale"
+            ):
+                continue
+            reason = self._memory_conflict_reason(row["memory_a"], row["memory_b"])
+            if not reason:
+                continue
+            conflicts.append(
+                {
+                    "id": row["id"],
+                    "reason": reason,
+                    "created_at": row["created_at"],
+                    "memory_a": row["memory_a"],
+                    "memory_b": row["memory_b"],
+                }
+            )
+        return conflicts
 
     async def get_memory_review(self, chat_id: str, limit: int = 5) -> dict:
         """Return memories and conflicts worth explicit user review."""
@@ -949,6 +970,8 @@ class Storage:
             if not fact:
                 continue
             key, value = fact
+            if key not in SINGLE_VALUE_MEMORY_FACTS:
+                continue
             existing = fact_index.get(key)
             if existing and existing.id and self._extract_memory_fact(existing.content):
                 existing_value = self._extract_memory_fact(existing.content)[1]
@@ -958,13 +981,18 @@ class Storage:
                         if existing.created_at <= item.created_at
                         else (item, existing)
                     )
-                    conflicts.append(
-                        (
-                            older.id,
-                            newer.id,
-                            f"conflicting {key}: {existing_value} vs {value}",
-                        )
+                    reason = self._memory_conflict_reason(
+                        older.content,
+                        newer.content,
                     )
+                    if reason:
+                        conflicts.append(
+                            (
+                                older.id,
+                                newer.id,
+                                reason,
+                            )
+                        )
                     fact_index[key] = newer
             else:
                 fact_index[key] = item
@@ -1044,6 +1072,21 @@ class Storage:
             if match:
                 return key, match.group(1).strip()
         return None
+
+    @classmethod
+    def _memory_conflict_reason(cls, memory_a: str, memory_b: str) -> Optional[str]:
+        fact_a = cls._extract_memory_fact(memory_a)
+        fact_b = cls._extract_memory_fact(memory_b)
+        if not fact_a or not fact_b:
+            return None
+
+        key_a, value_a = fact_a
+        key_b, value_b = fact_b
+        if key_a != key_b or key_a not in SINGLE_VALUE_MEMORY_FACTS:
+            return None
+        if value_a == value_b:
+            return None
+        return f"conflicting {key_a}: {value_a} vs {value_b}"
 
     # === REMINDERS ===
 
