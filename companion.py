@@ -187,10 +187,11 @@ class CompanionService:
         return candidate > now + timedelta(minutes=1)
 
     def _pick_spark(self) -> Optional[str]:
+        """Sparks may be a flat list (cards file) or a dict of topic lists."""
         if not self.sparks:
             return None
-        topic = random.choice(list(self.sparks.keys()))
-        sparks = self.sparks.get(topic, [])
-        if not sparks:
-            return None
-        return random.choice(sparks)
+        if isinstance(self.sparks, dict):
+            options = self.sparks.get(random.choice(list(self.sparks.keys())), [])
+        else:
+            options = self.sparks
+        return random.choice(options) if options else None

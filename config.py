@@ -53,6 +53,12 @@ class Config:
         Path(_cards_path) if _cards_path else DATA_DIR / "companion_cards.json"
     )
 
+    # Public file sharing (nginx serves brain/ at /docs/)
+    SHARE_DIR = Path("brain") / "shared"
+    SHARE_URL_BASE = os.getenv(
+        "SHARE_URL_BASE", "https://www.nosyagent.com/docs/shared"
+    )
+
     # Notion
     NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 

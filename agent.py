@@ -4,8 +4,10 @@ import ipaddress
 import json
 import logging
 import re
+import secrets
 import socket
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
@@ -42,7 +44,7 @@ class AIAgent:
 
     def _get_claude_tools(self) -> List[Dict[str, Any]]:
         tools = [
-            {"type": "web_search_20260209", "name": "web_search", "max_uses": 5},
+            {"type": "web_search_20260209", "name": "web_search", "max_uses": 8},
             {
                 "name": "update_brain_file",
                 "description": "Update the user's personal brain file. Use for DURABLE, LONG-TERM facts only.",
@@ -114,6 +116,30 @@ class AIAgent:
                         },
                     },
                     "required": ["url"],
+                },
+            },
+            {
+                "name": "share_file",
+                "description": (
+                    "Publish a document to a public web link and share the URL with the user. "
+                    "Use for research reports, summaries, plans, or data too long for chat. "
+                    "Use .html with inline CSS for formatted documents (renders in the browser), "
+                    ".md/.txt for plain notes, .csv/.json for data. Returns the public URL - "
+                    "include it in your reply."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "Base filename with extension, e.g. 'sleep-research.html'",
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Full file content.",
+                        },
+                    },
+                    "required": ["filename", "content"],
                 },
             },
         ]
@@ -268,12 +294,16 @@ class AIAgent:
         self, messages: list, api_kwargs: dict, chat_id: str, on_tool=None
     ):
         """Run non-streaming tool turns. Calls on_tool(name) for status updates."""
-        for turn in range(5):
+        for turn in range(8):
             self._mark_cache_breakpoint(messages)
             response = await self.client.messages.create(
                 messages=messages, **api_kwargs
             )
             self._log_usage(response, f"tool_loop[{turn}]")
+            if response.stop_reason == "pause_turn":
+                # Server-side tool (web search) paused mid-turn; re-send to resume
+                messages.append({"role": "assistant", "content": response.content})
+                continue
             if response.stop_reason != "tool_use":
                 return messages, response
             messages.append({"role": "assistant", "content": response.content})
@@ -404,6 +434,7 @@ class AIAgent:
         "query_entities": "looking up facts",
         "schedule_message": "setting reminder",
         "web_fetch": "fetching a page",
+        "share_file": "publishing a document",
     }
 
     async def stream_response(
@@ -438,7 +469,8 @@ class AIAgent:
             )
             self._log_usage(first_response, "stream_first")
 
-            if first_response.stop_reason == "tool_use":
+            used_tools = first_response.stop_reason in ("tool_use", "pause_turn")
+            if used_tools:
                 # Process tool turns non-streaming
                 messages.append(
                     {"role": "assistant", "content": first_response.content}
@@ -457,28 +489,22 @@ class AIAgent:
                             }
                         )
                         logger.info(f"tool: {block.name} success={result['success']}")
-                messages.append({"role": "user", "content": tool_results_turn})
-                # Continue tool loop if more tools needed
-                messages, _ = await self._run_tool_loop(
+                if tool_results_turn:
+                    messages.append({"role": "user", "content": tool_results_turn})
+                # Continue tool loop if more tools needed (or resume a paused turn)
+                messages, final_response = await self._run_tool_loop(
                     messages, api_kwargs, chat_id, on_tool=on_tool
                 )
-
-            # Final turn: stream text (only call if tools were used, otherwise we already have text)
-            full_response = ""
-            if first_response.stop_reason == "tool_use":
-                self._mark_cache_breakpoint(messages)
-                async with self.client.messages.stream(
-                    messages=messages, **api_kwargs
-                ) as stream:
-                    async for text in stream.text_stream:
-                        full_response += text
-                        yield text
             else:
-                # No tools: extract text from the response we already have (no wasted call)
-                for block in first_response.content:
-                    if block.type == "text":
-                        full_response += block.text
-                yield full_response
+                final_response = first_response
+
+            # Use the final response we already have (a second streamed call
+            # would regenerate the same answer and double cost + latency)
+            full_response = ""
+            for block in final_response.content:
+                if block.type == "text":
+                    full_response += block.text
+            yield full_response
 
             # Companion may append extra text
             final = await self._finalize(chat_id, user_message, full_response)
@@ -527,8 +553,14 @@ class AIAgent:
             "- Reminders: schedule_message, confirm briefly\n"
             "- Memory: update_brain_file for lasting insights only\n"
             "- Facts: query_entities for quick structured lookups\n"
-            "- Search: web_search, cite sources briefly\n"
+            "- Search: web_search, cite sources briefly. For research requests, "
+            "run several searches from different angles before answering, and "
+            "cross-check claims across sources\n"
             "- Fetch: web_fetch for specific URLs\n"
+            "- Share: share_file publishes a document to a public link. Use it "
+            "for research reports and anything too long for chat: write a "
+            "clean standalone .html, then send the link with a 2-3 line "
+            "summary in the message\n"
             "- Vision/OCR: read attached images directly and transcribe visible text"
         )
         if self.notion:
@@ -711,6 +743,24 @@ class AIAgent:
                 content = await self._fetch_url(url)
                 return {"tool_name": tool_name, "content": content, "success": True}
 
+            elif tool_name == "share_file":
+                filename = tool_input.get("filename", "")
+                content = tool_input.get("content", "")
+                try:
+                    url = self._share_file(filename, content)
+                except ValueError as exc:
+                    return {
+                        "tool_name": tool_name,
+                        "content": str(exc),
+                        "success": False,
+                    }
+                logger.info(f"shared file for {chat_id}: {url}")
+                return {
+                    "tool_name": tool_name,
+                    "content": f"Published: {url}",
+                    "success": True,
+                }
+
             elif tool_name == "notion_search":
                 query = tool_input.get("query", "")
                 results = await self.notion.search(query, limit=5)
@@ -779,6 +829,25 @@ class AIAgent:
                 "content": "Action failed. Please try again.",
                 "success": False,
             }
+
+    SHARE_EXTENSIONS = {".md", ".html", ".txt", ".csv", ".json"}
+
+    def _share_file(self, filename: str, content: str) -> str:
+        """Write content to the public share dir, return its URL."""
+        name = Path(filename).name
+        stem, ext = name.rsplit(".", 1) if "." in name else (name, "")
+        ext = f".{ext.lower()}"
+        if ext not in self.SHARE_EXTENSIONS:
+            raise ValueError(
+                f"Extension '{ext}' not allowed. Use one of: "
+                + ", ".join(sorted(self.SHARE_EXTENSIONS))
+            )
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "-", stem).strip("-") or "file"
+        slug = f"{stem}-{secrets.token_hex(3)}{ext}"
+        share_dir = self.config.SHARE_DIR
+        share_dir.mkdir(parents=True, exist_ok=True)
+        (share_dir / slug).write_text(content, encoding="utf-8")
+        return f"{self.config.SHARE_URL_BASE}/{slug}"
 
     async def _fetch_url(self, url: str) -> str:
         current_url = url.strip()

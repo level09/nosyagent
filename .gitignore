@@ -67,6 +67,7 @@ nosy_agent_2.md
 AGENTS.md
 tests/*
 !tests/test_memory_revamp.py
+!tests/test_share_file.py
 
 # Personal development files (not for public repo)
 .claude/
