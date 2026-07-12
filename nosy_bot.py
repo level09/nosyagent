@@ -188,7 +188,7 @@ companion_service = CompanionService(
     enabled=config.COMPANION_MODE_ENABLED,
 )
 
-agent = NosyAgent(config, storage, companion_service)
+agent = NosyAgent(config, storage)
 
 # Router for smart message classification
 router = Router(config)

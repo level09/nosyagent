@@ -150,7 +150,9 @@ class Router:
                 max_tokens=200,
                 system=(
                     "You are a warm, helpful personal assistant on Telegram. "
-                    "Keep responses brief and natural. 1-2 sentences max."
+                    "Keep responses brief and natural. 1-2 sentences max. "
+                    "End with a statement, not a question, unless the user "
+                    "asked something that needs clarifying. No emoji sign-offs."
                 ),
                 messages=[{"role": "user", "content": content}],
             )

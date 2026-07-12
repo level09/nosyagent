@@ -6,7 +6,6 @@ import logging
 import re
 import socket
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
@@ -14,7 +13,6 @@ import anthropic
 import dateparser
 import httpx
 
-from companion import CompanionService
 from config import Config
 from notion_tools import NotionService
 from reminder_scheduler import schedule_reminder_task
@@ -32,12 +30,10 @@ class AIAgent:
         self,
         config: Config,
         storage: Storage,
-        companion_service: Optional[CompanionService] = None,
     ):
         self.config = config
         self.client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
         self.storage = storage
-        self.companion = companion_service
 
         self.notion = None
         if config.NOTION_TOKEN:
@@ -298,20 +294,9 @@ class AIAgent:
             messages.append({"role": "user", "content": tool_results_turn})
         return messages, response
 
-    async def _finalize(
-        self, chat_id: str, user_message: str, response_text: str, recent_messages
-    ):
-        """Companion wrap + store. Used by all paths."""
-        final = response_text
-        if self.companion and final.strip():
-            try:
-                final = await self.companion.wrap_response(
-                    chat_id, user_message, response_text, recent_messages
-                )
-            except Exception as exc:
-                logger.warning(f"Companion wrapper failed: {exc}")
-        if not final.strip():
-            final = "Done"
+    async def _finalize(self, chat_id: str, user_message: str, response_text: str):
+        """Store the exchange. Used by all paths."""
+        final = response_text if response_text.strip() else "Done"
         await self.storage.store_conversation(chat_id, user_message, final)
         return final
 
@@ -343,9 +328,7 @@ class AIAgent:
                 if block.type == "text":
                     full_text += block.text
 
-            final = await self._finalize(
-                chat_id, user_message, full_text, recent_messages
-            )
+            final = await self._finalize(chat_id, user_message, full_text)
             return final, None
 
         except Exception as e:
@@ -403,9 +386,7 @@ class AIAgent:
                 if block.type == "text":
                     full_text += block.text
 
-            final = await self._finalize(
-                chat_id, user_message, full_text, recent_messages
-            )
+            final = await self._finalize(chat_id, user_message, full_text)
             return final, None
 
         except Exception as e:
@@ -500,9 +481,7 @@ class AIAgent:
                 yield full_response
 
             # Companion may append extra text
-            final = await self._finalize(
-                chat_id, user_message, full_response, recent_messages
-            )
+            final = await self._finalize(chat_id, user_message, full_response)
             if final != full_response:
                 extra = final[len(full_response) :]
                 if extra:
@@ -558,14 +537,32 @@ class AIAgent:
             {
                 "type": "text",
                 "text": (
-                    "You are a proactive life optimization AI assistant.\n\n"
-                    "FORMAT (Telegram):\n"
-                    "- Keep responses readable on mobile, 1-3 short paragraphs.\n"
-                    "- Skip preambles. Be conversational but efficient.\n"
-                    "- Use bullet points when listing multiple items.\n\n"
+                    "You are a personal assistant and coach. Direct, grounded, "
+                    "occasionally funny. Not a hype man.\n\n"
+                    "FORMAT (Telegram, mobile):\n"
+                    "- 1-3 short paragraphs. Skip preambles.\n"
+                    "- Bullets only for genuine lists. Bold at most one phrase "
+                    "per message. No emoji sign-offs.\n\n"
+                    "ENDINGS:\n"
+                    "- End when the answer is complete. A statement is a valid "
+                    "ending; most messages should not end with a question.\n"
+                    "- Ask a question only if you need information to act, or "
+                    "the user asked to be held accountable on something specific. "
+                    "At most one question per message, and it must reference "
+                    "something concrete from this conversation.\n"
+                    "- Never use generic check-ins ('How are things going?', "
+                    "'What would make today feel successful?', 'What's the move "
+                    "tomorrow?').\n"
+                    "- When the user shares something, acknowledging it well is "
+                    "a complete response. Don't turn every message into a "
+                    "coaching moment.\n\n"
+                    "TONE:\n"
+                    "- No hype interjections ('Real talk:', 'that's elite', "
+                    "'monster', 'locked in'). Say the substance plainly.\n"
+                    "- Disagree when the user is wrong; don't open with "
+                    "'Fair point—you're right' reflexively.\n\n"
                     "Core capabilities: Productivity, Health, Relationships, Finance, Goals.\n\n"
-                    f"Tools:\n{tools}\n\n"
-                    "Be helpful and warm, but don't over-explain."
+                    f"Tools:\n{tools}"
                 ),
                 "cache_control": {"type": "ephemeral"},
             }

@@ -454,7 +454,7 @@ async def main():
                 print_colored(
                     "⚠️ MCP agent not available, using standard agent", Colors.YELLOW
                 )
-            agent = AIAgent(config, storage, companion_service)
+            agent = AIAgent(config, storage)
 
         # Check command line arguments
         if len(sys.argv) > 1:
