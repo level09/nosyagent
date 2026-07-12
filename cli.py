@@ -454,15 +454,7 @@ async def main():
                 print_colored(
                     "⚠️ MCP agent not available, using standard agent", Colors.YELLOW
                 )
-            semantic_memory_path = (
-                config.SEMANTIC_MEMORY_PATH if config.SEMANTIC_MEMORY_ENABLED else None
-            )
-            agent = AIAgent(
-                config,
-                storage,
-                companion_service,
-                semantic_memory_path=semantic_memory_path,
-            )
+            agent = AIAgent(config, storage, companion_service)
 
         # Check command line arguments
         if len(sys.argv) > 1:

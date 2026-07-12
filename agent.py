@@ -20,15 +20,6 @@ from notion_tools import NotionService
 from reminder_scheduler import schedule_reminder_task
 from storage import Message, Storage
 
-# Optional semantic memory
-try:
-    from semantic_memory import SemanticMemory
-
-    SEMANTIC_MEMORY_AVAILABLE = True
-except ImportError:
-    SEMANTIC_MEMORY_AVAILABLE = False
-    SemanticMemory = None
-
 logger = logging.getLogger(__name__)
 
 
@@ -42,7 +33,6 @@ class AIAgent:
         config: Config,
         storage: Storage,
         companion_service: Optional[CompanionService] = None,
-        semantic_memory_path: Optional[Path] = None,
     ):
         self.config = config
         self.client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -54,25 +44,23 @@ class AIAgent:
             self.notion = NotionService(config.NOTION_TOKEN)
             logger.info("Notion integration enabled")
 
-        self.semantic_memory = None
-        if SEMANTIC_MEMORY_AVAILABLE and semantic_memory_path:
-            try:
-                self.semantic_memory = SemanticMemory(semantic_memory_path)
-                logger.info(f"Semantic memory enabled at {semantic_memory_path}")
-            except Exception as e:
-                logger.warning(f"Semantic memory unavailable: {e}")
-
     def _get_claude_tools(self) -> List[Dict[str, Any]]:
         tools = [
-            {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
+            {"type": "web_search_20260209", "name": "web_search", "max_uses": 5},
             {
                 "name": "update_brain_file",
                 "description": "Update the user's personal brain file. Use for DURABLE, LONG-TERM facts only.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "content": {"type": "string", "description": "New content (markdown). Be concise."},
-                        "reason": {"type": "string", "description": "Why this is worth remembering."},
+                        "content": {
+                            "type": "string",
+                            "description": "New content (markdown). Be concise.",
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Why this is worth remembering.",
+                        },
                     },
                     "required": ["content", "reason"],
                 },
@@ -106,8 +94,14 @@ class AIAgent:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "message": {"type": "string", "description": "The message to send."},
-                        "when": {"type": "string", "description": "Time expression (e.g. 'in 5 mins', 'friday at noon')."},
+                        "message": {
+                            "type": "string",
+                            "description": "The message to send.",
+                        },
+                        "when": {
+                            "type": "string",
+                            "description": "Time expression (e.g. 'in 5 mins', 'friday at noon').",
+                        },
                     },
                     "required": ["message", "when"],
                 },
@@ -118,7 +112,10 @@ class AIAgent:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "url": {"type": "string", "description": "HTTP or HTTPS URL to fetch."},
+                        "url": {
+                            "type": "string",
+                            "description": "HTTP or HTTPS URL to fetch.",
+                        },
                     },
                     "required": ["url"],
                 },
@@ -127,55 +124,78 @@ class AIAgent:
 
         # Notion tools (only if token configured)
         if self.notion:
-            tools.extend([
-                {
-                    "name": "notion_search",
-                    "description": "Search the user's Notion workspace for pages, notes, docs, or databases.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Search query (e.g. 'meeting notes', 'project plan')"},
+            tools.extend(
+                [
+                    {
+                        "name": "notion_search",
+                        "description": "Search the user's Notion workspace for pages, notes, docs, or databases.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "Search query (e.g. 'meeting notes', 'project plan')",
+                                },
+                            },
+                            "required": ["query"],
                         },
-                        "required": ["query"],
                     },
-                },
-                {
-                    "name": "notion_read",
-                    "description": "Read the full content of a Notion page by its ID. Use after notion_search to read a specific result.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "page_id": {"type": "string", "description": "The Notion page ID to read"},
+                    {
+                        "name": "notion_read",
+                        "description": "Read the full content of a Notion page by its ID. Use after notion_search to read a specific result.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "page_id": {
+                                    "type": "string",
+                                    "description": "The Notion page ID to read",
+                                },
+                            },
+                            "required": ["page_id"],
                         },
-                        "required": ["page_id"],
                     },
-                },
-                {
-                    "name": "notion_create",
-                    "description": "Create a new page in the user's Notion. Use for saving notes, plans, summaries, or any structured content.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string", "description": "Page title"},
-                            "content": {"type": "string", "description": "Page content in markdown format"},
-                            "parent_page_id": {"type": "string", "description": "Optional: parent page ID to nest under"},
+                    {
+                        "name": "notion_create",
+                        "description": "Create a new page in the user's Notion. Use for saving notes, plans, summaries, or any structured content.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "title": {
+                                    "type": "string",
+                                    "description": "Page title",
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Page content in markdown format",
+                                },
+                                "parent_page_id": {
+                                    "type": "string",
+                                    "description": "Optional: parent page ID to nest under",
+                                },
+                            },
+                            "required": ["title", "content"],
                         },
-                        "required": ["title", "content"],
                     },
-                },
-                {
-                    "name": "notion_append",
-                    "description": "Append content to an existing Notion page. Use to add notes, updates, or entries to an existing page.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "page_id": {"type": "string", "description": "The Notion page ID to append to"},
-                            "content": {"type": "string", "description": "Content to append in markdown format"},
+                    {
+                        "name": "notion_append",
+                        "description": "Append content to an existing Notion page. Use to add notes, updates, or entries to an existing page.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "page_id": {
+                                    "type": "string",
+                                    "description": "The Notion page ID to append to",
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Content to append in markdown format",
+                                },
+                            },
+                            "required": ["page_id", "content"],
                         },
-                        "required": ["page_id", "content"],
                     },
-                },
-            ])
+                ]
+            )
 
         # Cache tool definitions (identical across requests)
         if tools:
@@ -195,7 +215,11 @@ class AIAgent:
                 content = msg["content"]
                 if isinstance(content, str):
                     msg["content"] = [
-                        {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                        {
+                            "type": "text",
+                            "text": content,
+                            "cache_control": {"type": "ephemeral"},
+                        }
                     ]
                 elif isinstance(content, list) and content:
                     last = content[-1]
@@ -210,28 +234,23 @@ class AIAgent:
         recent_messages = await self.storage.get_recent_conversations(chat_id, limit=50)
         user_context = await self.storage.read_user_context(chat_id)
 
-        semantic_context = []
-        if self.semantic_memory:
-            try:
-                semantic_context = self.semantic_memory.search(user_message, chat_id, limit=3)
-            except Exception as e:
-                logger.warning(f"Semantic search failed: {e}")
-
         structured_memory = []
         try:
-            structured_memory = await self.storage.search_memory_items(chat_id, user_message, limit=5)
+            structured_memory = await self.storage.search_memory_items(
+                chat_id, user_message, limit=5
+            )
         except Exception as e:
             logger.warning(f"Structured memory search failed: {e}")
 
         system_prompt = self._build_system_prompt()
         built_message = self._build_adaptive_message(
-            user_message, user_context, recent_messages, semantic_context, structured_memory
+            user_message, user_context, recent_messages, structured_memory
         )
 
         brain_len = len(user_context) if user_context else 0
         logger.info(
             f"context: chat={chat_id} brain={brain_len} history={len(recent_messages)} "
-            f"semantic={len(semantic_context)} structured={len(structured_memory)} "
+            f"structured={len(structured_memory)} "
             f"budget={self.config.CONTEXT_TOKEN_BUDGET}"
         )
 
@@ -249,11 +268,15 @@ class AIAgent:
             parts.append(f"cache_read={cache_read} cache_write={cache_create}")
         logger.info(" ".join(parts))
 
-    async def _run_tool_loop(self, messages: list, api_kwargs: dict, chat_id: str, on_tool=None):
+    async def _run_tool_loop(
+        self, messages: list, api_kwargs: dict, chat_id: str, on_tool=None
+    ):
         """Run non-streaming tool turns. Calls on_tool(name) for status updates."""
         for turn in range(5):
             self._mark_cache_breakpoint(messages)
-            response = await self.client.messages.create(messages=messages, **api_kwargs)
+            response = await self.client.messages.create(
+                messages=messages, **api_kwargs
+            )
             self._log_usage(response, f"tool_loop[{turn}]")
             if response.stop_reason != "tool_use":
                 return messages, response
@@ -264,16 +287,20 @@ class AIAgent:
                     if on_tool:
                         await on_tool(block.name)
                     result = await self._handle_tool_call(block, chat_id)
-                    tool_results_turn.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result["content"],
-                    })
+                    tool_results_turn.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result["content"],
+                        }
+                    )
                     logger.info(f"tool: {block.name} success={result['success']}")
             messages.append({"role": "user", "content": tool_results_turn})
         return messages, response
 
-    async def _finalize(self, chat_id: str, user_message: str, response_text: str, recent_messages):
+    async def _finalize(
+        self, chat_id: str, user_message: str, response_text: str, recent_messages
+    ):
         """Companion wrap + store. Used by all paths."""
         final = response_text
         if self.companion and final.strip():
@@ -290,10 +317,14 @@ class AIAgent:
 
     # === Public API ===
 
-    async def process_message(self, chat_id: str, user_message: str) -> tuple[str, Optional[dict]]:
+    async def process_message(
+        self, chat_id: str, user_message: str
+    ) -> tuple[str, Optional[dict]]:
         """Non-streaming response. Used by CLI and as fallback."""
         try:
-            system_prompt, built_message, recent_messages = await self._prepare_context(chat_id, user_message)
+            system_prompt, built_message, recent_messages = await self._prepare_context(
+                chat_id, user_message
+            )
             messages = [{"role": "user", "content": built_message}]
             api_kwargs = dict(
                 model=self.config.SONNET_MODEL,
@@ -302,7 +333,9 @@ class AIAgent:
                 tools=self._get_claude_tools(),
             )
 
-            messages, response = await self._run_tool_loop(messages, api_kwargs, chat_id)
+            messages, response = await self._run_tool_loop(
+                messages, api_kwargs, chat_id
+            )
 
             # Extract text from final response
             full_text = ""
@@ -310,7 +343,9 @@ class AIAgent:
                 if block.type == "text":
                     full_text += block.text
 
-            final = await self._finalize(chat_id, user_message, full_text, recent_messages)
+            final = await self._finalize(
+                chat_id, user_message, full_text, recent_messages
+            )
             return final, None
 
         except Exception as e:
@@ -321,7 +356,9 @@ class AIAgent:
         self, chat_id: str, user_message: str, image_bytes: bytes
     ) -> tuple[str, Optional[dict]]:
         try:
-            system_prompt, built_message, recent_messages = await self._prepare_context(chat_id, user_message)
+            system_prompt, built_message, recent_messages = await self._prepare_context(
+                chat_id, user_message
+            )
 
             image_base64 = base64.b64encode(image_bytes).decode("utf-8")
             image_format = "image/jpeg"
@@ -338,7 +375,14 @@ class AIAgent:
             )
 
             message_content = [
-                {"type": "image", "source": {"type": "base64", "media_type": image_format, "data": image_base64}},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": image_format,
+                        "data": image_base64,
+                    },
+                },
                 {"type": "text", "text": f"{image_task}\n\n{built_message}"},
             ]
 
@@ -350,14 +394,18 @@ class AIAgent:
                 tools=self._get_claude_tools(),
             )
 
-            messages, response = await self._run_tool_loop(messages, api_kwargs, chat_id)
+            messages, response = await self._run_tool_loop(
+                messages, api_kwargs, chat_id
+            )
 
             full_text = ""
             for block in response.content:
                 if block.type == "text":
                     full_text += block.text
 
-            final = await self._finalize(chat_id, user_message, full_text, recent_messages)
+            final = await self._finalize(
+                chat_id, user_message, full_text, recent_messages
+            )
             return final, None
 
         except Exception as e:
@@ -377,8 +425,11 @@ class AIAgent:
         "web_fetch": "fetching a page",
     }
 
-    async def stream_response(self, chat_id: str, user_message: str, on_status=None) -> AsyncGenerator[str, None]:
+    async def stream_response(
+        self, chat_id: str, user_message: str, on_status=None
+    ) -> AsyncGenerator[str, None]:
         """Stream text deltas. Calls on_status(label) during tool turns for UX feedback."""
+
         async def on_tool(name):
             label = self.TOOL_LABELS.get(name, name)
             if on_status:
@@ -388,7 +439,9 @@ class AIAgent:
             if on_status:
                 await on_status("thinking")
 
-            system_prompt, built_message, recent_messages = await self._prepare_context(chat_id, user_message)
+            system_prompt, built_message, recent_messages = await self._prepare_context(
+                chat_id, user_message
+            )
             messages = [{"role": "user", "content": built_message}]
             api_kwargs = dict(
                 model=self.config.SONNET_MODEL,
@@ -399,33 +452,43 @@ class AIAgent:
 
             # Stream directly if no tool use needed, otherwise run tool loop first
             self._mark_cache_breakpoint(messages)
-            first_response = await self.client.messages.create(messages=messages, **api_kwargs)
+            first_response = await self.client.messages.create(
+                messages=messages, **api_kwargs
+            )
             self._log_usage(first_response, "stream_first")
 
             if first_response.stop_reason == "tool_use":
                 # Process tool turns non-streaming
-                messages.append({"role": "assistant", "content": first_response.content})
+                messages.append(
+                    {"role": "assistant", "content": first_response.content}
+                )
                 tool_results_turn = []
                 for block in first_response.content:
                     if hasattr(block, "type") and block.type == "tool_use":
                         if on_tool:
                             await on_tool(block.name)
                         result = await self._handle_tool_call(block, chat_id)
-                        tool_results_turn.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result["content"],
-                        })
+                        tool_results_turn.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": result["content"],
+                            }
+                        )
                         logger.info(f"tool: {block.name} success={result['success']}")
                 messages.append({"role": "user", "content": tool_results_turn})
                 # Continue tool loop if more tools needed
-                messages, _ = await self._run_tool_loop(messages, api_kwargs, chat_id, on_tool=on_tool)
+                messages, _ = await self._run_tool_loop(
+                    messages, api_kwargs, chat_id, on_tool=on_tool
+                )
 
             # Final turn: stream text (only call if tools were used, otherwise we already have text)
             full_response = ""
             if first_response.stop_reason == "tool_use":
                 self._mark_cache_breakpoint(messages)
-                async with self.client.messages.stream(messages=messages, **api_kwargs) as stream:
+                async with self.client.messages.stream(
+                    messages=messages, **api_kwargs
+                ) as stream:
                     async for text in stream.text_stream:
                         full_response += text
                         yield text
@@ -437,9 +500,11 @@ class AIAgent:
                 yield full_response
 
             # Companion may append extra text
-            final = await self._finalize(chat_id, user_message, full_response, recent_messages)
+            final = await self._finalize(
+                chat_id, user_message, full_response, recent_messages
+            )
             if final != full_response:
-                extra = final[len(full_response):]
+                extra = final[len(full_response) :]
                 if extra:
                     yield extra
 
@@ -448,7 +513,9 @@ class AIAgent:
             yield f"Sorry, I encountered an error: {e}"
 
     # Backward compat for CLI
-    async def stream_chat(self, message: str, chat_id: int, context: str = "") -> AsyncGenerator[str, None]:
+    async def stream_chat(
+        self, message: str, chat_id: int, context: str = ""
+    ) -> AsyncGenerator[str, None]:
         try:
             yield "Thinking..."
             response, _ = await self.process_message(str(chat_id), message)
@@ -465,7 +532,9 @@ class AIAgent:
             full_message = message
             if context:
                 full_message = f"{context}\n\n{message}"
-            response, _ = await self.process_message_with_image(str(chat_id), full_message, image_bytes)
+            response, _ = await self.process_message_with_image(
+                str(chat_id), full_message, image_bytes
+            )
             yield response
         except Exception as e:
             logger.error(f"stream_chat_with_image error: {e}")
@@ -507,7 +576,6 @@ class AIAgent:
         user_message: str,
         user_context: str,
         recent_messages: List[Message],
-        semantic_context: List = None,
         structured_memory: List = None,
     ) -> str:
         budget = self.config.CONTEXT_TOKEN_BUDGET
@@ -531,13 +599,6 @@ class AIAgent:
         brain_tokens = estimate_tokens(brain_text)
         layers.append(brain_text)
         used += brain_tokens
-
-        if semantic_context:
-            semantic_text = self._format_semantic_context(semantic_context)
-            semantic_tokens = estimate_tokens(semantic_text)
-            if used + semantic_tokens < budget * 0.7:
-                layers.append(semantic_text)
-                used += semantic_tokens
 
         if structured_memory:
             memory_text = self._format_structured_memory_context(structured_memory)
@@ -565,22 +626,6 @@ class AIAgent:
 
         full_message = "\n\n".join(layers)
         return f"{full_message}\n\n[Current Message]\n{user_message}"
-
-    def _format_semantic_context(self, semantic_context: List) -> str:
-        now = datetime.utcnow()
-        lines = ["[Relevant Past Context]"]
-        for chunk in semantic_context:
-            age_days = (now - chunk.timestamp).days
-            if age_days == 0:
-                age_str = "today"
-            elif age_days == 1:
-                age_str = "yesterday"
-            elif age_days < 7:
-                age_str = f"{age_days}d ago"
-            else:
-                age_str = f"{age_days // 7}w ago"
-            lines.append(f"- ({age_str}) {chunk.content}")
-        return "\n".join(lines)
 
     def _format_structured_memory_context(self, memories: List) -> str:
         lines = ["[Structured Memory]"]
@@ -617,23 +662,29 @@ class AIAgent:
                 except Exception as e:
                     logger.warning(f"Structured memory write failed: {e}")
                 logger.info(f"brain updated for {chat_id}: {reason}")
-                if self.semantic_memory:
-                    try:
-                        self.semantic_memory.reindex_brain(chat_id, content)
-                    except Exception as e:
-                        logger.warning(f"Reindex failed: {e}")
                 asyncio.create_task(self._extract_entities(chat_id, content))
-                return {"tool_name": tool_name, "content": f"Brain updated: {reason}", "success": True}
+                return {
+                    "tool_name": tool_name,
+                    "content": f"Brain updated: {reason}",
+                    "success": True,
+                }
 
             elif tool_name == "read_brain_file":
                 content = await self.storage.read_user_context(chat_id)
-                return {"tool_name": tool_name, "content": content or "No personal context.", "success": True}
+                return {
+                    "tool_name": tool_name,
+                    "content": content or "No personal context.",
+                    "success": True,
+                }
 
             elif tool_name == "query_entities":
                 query = tool_input.get("query", "")
                 entities = await self.storage.search_entities(chat_id, query)
                 if entities:
-                    result = "\n".join(f"- {e['subject']} {e['predicate']} {e['object']}" for e in entities)
+                    result = "\n".join(
+                        f"- {e['subject']} {e['predicate']} {e['object']}"
+                        for e in entities
+                    )
                 else:
                     result = "No matching facts found."
                 return {"tool_name": tool_name, "content": result, "success": True}
@@ -643,12 +694,18 @@ class AIAgent:
                 when_text = tool_input.get("when", "")
                 scheduled_time = self._parse_when(when_text)
                 if not scheduled_time:
-                    return {"tool_name": tool_name, "content": f"Could not parse time: {when_text}", "success": False}
+                    return {
+                        "tool_name": tool_name,
+                        "content": f"Could not parse time: {when_text}",
+                        "success": False,
+                    }
                 success = await schedule_reminder_task(chat_id, message, scheduled_time)
                 time_str = scheduled_time.strftime("%I:%M %p on %b %d")
                 return {
                     "tool_name": tool_name,
-                    "content": f"Reminder scheduled for {time_str}" if success else "Failed to schedule",
+                    "content": f"Reminder scheduled for {time_str}"
+                    if success
+                    else "Failed to schedule",
                     "success": success,
                 }
 
@@ -663,9 +720,19 @@ class AIAgent:
                 if results:
                     lines = []
                     for r in results:
-                        lines.append(f"- [{r['title']}] id={r['id']} ({r['last_edited'][:10]})")
-                    return {"tool_name": tool_name, "content": "\n".join(lines), "success": True}
-                return {"tool_name": tool_name, "content": "No results found.", "success": True}
+                        lines.append(
+                            f"- [{r['title']}] id={r['id']} ({r['last_edited'][:10]})"
+                        )
+                    return {
+                        "tool_name": tool_name,
+                        "content": "\n".join(lines),
+                        "success": True,
+                    }
+                return {
+                    "tool_name": tool_name,
+                    "content": "No results found.",
+                    "success": True,
+                }
 
             elif tool_name == "notion_read":
                 page_id = tool_input.get("page_id", "")
@@ -674,27 +741,47 @@ class AIAgent:
                 content = page["content"]
                 if len(content) > 4000:
                     content = content[:4000] + "\n\n... (truncated)"
-                return {"tool_name": tool_name, "content": f"# {page['title']}\n\n{content}", "success": True}
+                return {
+                    "tool_name": tool_name,
+                    "content": f"# {page['title']}\n\n{content}",
+                    "success": True,
+                }
 
             elif tool_name == "notion_create":
                 title = tool_input.get("title", "")
                 content = tool_input.get("content", "")
                 parent = tool_input.get("parent_page_id")
                 result = await self.notion.create_page(title, content, parent)
-                return {"tool_name": tool_name, "content": f"Created: {result['title']} ({result['url']})", "success": True}
+                return {
+                    "tool_name": tool_name,
+                    "content": f"Created: {result['title']} ({result['url']})",
+                    "success": True,
+                }
 
             elif tool_name == "notion_append":
                 page_id = tool_input.get("page_id", "")
                 content = tool_input.get("content", "")
                 await self.notion.append_to_page(page_id, content)
-                return {"tool_name": tool_name, "content": "Content appended.", "success": True}
+                return {
+                    "tool_name": tool_name,
+                    "content": "Content appended.",
+                    "success": True,
+                }
 
             else:
-                return {"tool_name": tool_name, "content": f"Unknown tool: {tool_name}", "success": False}
+                return {
+                    "tool_name": tool_name,
+                    "content": f"Unknown tool: {tool_name}",
+                    "success": False,
+                }
 
         except Exception as e:
             logger.error(f"tool {tool_name} failed: {e}")
-            return {"tool_name": tool_name, "content": "Action failed. Please try again.", "success": False}
+            return {
+                "tool_name": tool_name,
+                "content": "Action failed. Please try again.",
+                "success": False,
+            }
 
     async def _fetch_url(self, url: str) -> str:
         current_url = url.strip()
@@ -718,7 +805,10 @@ class AIAgent:
                     break
                 next_url = urljoin(str(response.url), location)
                 parsed_next = urlparse(next_url)
-                if parsed_next.scheme not in {"http", "https"} or not parsed_next.netloc:
+                if (
+                    parsed_next.scheme not in {"http", "https"}
+                    or not parsed_next.netloc
+                ):
                     return "Blocked redirect to an unsupported URL."
                 if await self._is_blocked_fetch_host(parsed_next.hostname):
                     return "Blocked redirect to a private or local URL."
@@ -782,20 +872,22 @@ class AIAgent:
             response = await self.client.messages.create(
                 model=self.config.HAIKU_MODEL,
                 max_tokens=1500,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "Extract factual triples from this personal context. "
-                        'Return a JSON array of {"subject", "predicate", "object"} objects.\n\n'
-                        "Rules:\n"
-                        "- Subject is 'user' for facts about the person\n"
-                        "- Normalize predicates: takes, works_at, lives_in, spouse, child, "
-                        "goal, preference, allergy, hobby, tracks, age, etc.\n"
-                        "- Only extract concrete, durable facts\n\n"
-                        f"Context:\n{brain_content}\n\n"
-                        "Return ONLY a JSON array, nothing else."
-                    ),
-                }],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            "Extract factual triples from this personal context. "
+                            'Return a JSON array of {"subject", "predicate", "object"} objects.\n\n'
+                            "Rules:\n"
+                            "- Subject is 'user' for facts about the person\n"
+                            "- Normalize predicates: takes, works_at, lives_in, spouse, child, "
+                            "goal, preference, allergy, hobby, tracks, age, etc.\n"
+                            "- Only extract concrete, durable facts\n\n"
+                            f"Context:\n{brain_content}\n\n"
+                            "Return ONLY a JSON array, nothing else."
+                        ),
+                    }
+                ],
             )
             text = response.content[0].text.strip()
             if text.startswith("```"):

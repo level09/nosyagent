@@ -3,6 +3,7 @@ import logging
 import random
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request, Response
@@ -187,13 +188,7 @@ companion_service = CompanionService(
     enabled=config.COMPANION_MODE_ENABLED,
 )
 
-# Initialize agent with optional semantic memory
-semantic_memory_path = (
-    config.SEMANTIC_MEMORY_PATH if config.SEMANTIC_MEMORY_ENABLED else None
-)
-agent = NosyAgent(
-    config, storage, companion_service, semantic_memory_path=semantic_memory_path
-)
+agent = NosyAgent(config, storage, companion_service)
 
 # Router for smart message classification
 router = Router(config)
@@ -204,7 +199,6 @@ ALLOWED_CHAT_IDS = config.ALLOWED_CHAT_IDS
 # Startup info
 logger.info(
     f"NosyAgent starting: model={config.SONNET_MODEL} haiku={config.HAIKU_MODEL} "
-    f"semantic_memory={'on' if semantic_memory_path else 'off'} "
     f"companion={'on' if config.COMPANION_MODE_ENABLED else 'off'} "
     f"notion={'on' if config.NOTION_TOKEN else 'off'} "
     f"context_budget={config.CONTEXT_TOKEN_BUDGET} "
@@ -582,8 +576,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await send_or_edit_message(update, thinking_message, final_response)
                 return
 
-        # Route: simple messages go to Haiku, complex to Sonnet
-        classification = await router.classify(user_text)
+        # Route: simple messages go to Haiku, complex to Sonnet.
+        # A conversation is "warm" if the last exchange was minutes ago —
+        # short follow-ups then belong to the full agent, not the quick path.
+        last = await storage.get_recent_conversations(str(chat_id), limit=1)
+        warm = bool(last) and (
+            datetime.utcnow() - last[-1].timestamp < timedelta(minutes=5)
+        )
+        classification = await router.classify(user_text, warm=warm)
         logger.debug(f"Classified as {classification}: {user_text[:50]}")
 
         if classification == "simple":

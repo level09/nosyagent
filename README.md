@@ -28,9 +28,6 @@ Not chat history. A living document about you - health markers, diet goals, fina
 ### Time Awareness
 Most AI exists in a timeless bubble. NosyAgent understands temporal context - how much time passed since you last talked, what day it is, when you mentioned something. While traveling? It knows you've been offline for days before suggesting anything.
 
-### Semantic Memory
-Ask "what did we discuss about my startup?" and it finds relevant context from weeks ago. Vector search across your conversation history.
-
 ### Structured Memory Lifecycle
 NosyAgent keeps structured memory items in SQLite with confidence labels, decay, retrieval strengthening, and daily consolidation. Useful memories stick because they get recalled or confirmed; stale or contradictory memories lose authority instead of silently steering future responses.
 
@@ -57,7 +54,7 @@ Complex requests can use web search for current information and a guarded URL fe
 
 - Python + Claude API (Anthropic)
 - SQLite for storage + automatic brain versioning
-- SQLite structured memory review + LanceDB semantic recall
+- SQLite structured memory review with decay and consolidation
 - Telegram webhook bot with draft streaming, HTML fallback, image OCR, and long-message chunking
 - ARQ + Redis for scheduled reminders
 

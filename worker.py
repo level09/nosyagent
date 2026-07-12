@@ -15,7 +15,12 @@ from arq.cron import cron
 from config import Config
 from storage import Storage
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+# httpx INFO logs full request URLs, which include the bot token
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 REDIS_SETTINGS = RedisSettings(host="localhost", port=6379, database=0)
@@ -35,7 +40,11 @@ async def send_telegram(config, chat_id: str, text: str):
     """Send a message via Telegram bot API."""
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
-        resp = await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10.0)
+        resp = await client.post(
+            url,
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            timeout=10.0,
+        )
         if resp.status_code != 200:
             logger.error(f"Telegram send failed: {resp.status_code} {resp.text}")
             return False
@@ -44,7 +53,10 @@ async def send_telegram(config, chat_id: str, text: str):
 
 # === Reminder task (existing) ===
 
-async def send_reminder(ctx: Dict[str, Any], reminder_id: int, chat_id: str, message: str, **kwargs) -> str:
+
+async def send_reminder(
+    ctx: Dict[str, Any], reminder_id: int, chat_id: str, message: str, **kwargs
+) -> str:
     storage, config = get_storage()
     logger.info(f"reminder: delivering {reminder_id} to {chat_id}")
 
@@ -53,10 +65,15 @@ async def send_reminder(ctx: Dict[str, Any], reminder_id: int, chat_id: str, mes
     if chat_id.startswith("cli_"):
         try:
             import subprocess
-            subprocess.run([
-                "osascript", "-e",
-                f'display notification "{message}" with title "NosyAgent Reminder" sound name "Glass"'
-            ], check=True)
+
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    f'display notification "{message}" with title "NosyAgent Reminder" sound name "Glass"',
+                ],
+                check=True,
+            )
         except Exception:
             logger.info(f"CLI reminder: {message}")
     else:
@@ -109,14 +126,23 @@ async def generate_digest(ctx: Dict[str, Any]) -> str:
             recent = await storage.get_recent_conversations(chat_id_str, limit=20)
             entities = await storage.get_all_entities(chat_id_str)
 
-            # Format recent conversations (last 24h worth)
+            # Format recent conversations (last 24h worth).
+            # Exclude prior digests: feeding them back makes the digest
+            # echo its own stale claims (streak counters, old weight).
             recent_text = ""
-            for msg in recent[-10:]:
-                recent_text += f"User: {msg.user_message}\nAgent: {msg.agent_response[:200]}\n\n"
+            real = [m for m in recent if m.user_message != "[daily digest]"]
+            for msg in real[-10:]:
+                recent_text += (
+                    f"User: {msg.user_message}\nAgent: {msg.agent_response[:200]}\n\n"
+                )
 
-            entities_text = "\n".join(
-                f"- {e['subject']} {e['predicate']} {e['object']}" for e in entities
-            ) if entities else "No structured facts yet."
+            entities_text = (
+                "\n".join(
+                    f"- {e['subject']} {e['predicate']} {e['object']}" for e in entities
+                )
+                if entities
+                else "No structured facts yet."
+            )
 
             now = datetime.now().strftime("%A %B %d, %Y %H:%M")
 
@@ -147,6 +173,7 @@ async def generate_digest(ctx: Dict[str, Any]) -> str:
 
 # === Memory sleep consolidation ===
 
+
 async def memory_sleep(ctx: Dict[str, Any]) -> str:
     """Run deterministic memory lifecycle maintenance for all active users."""
     storage, config = get_storage()
@@ -166,6 +193,7 @@ async def memory_sleep(ctx: Dict[str, Any]) -> str:
 
 
 # === Worker config ===
+
 
 class WorkerSettings:
     functions = [send_reminder, memory_sleep]
@@ -191,4 +219,5 @@ WorkerSettings.on_shutdown = shutdown
 
 if __name__ == "__main__":
     from arq import run_worker
+
     run_worker(WorkerSettings)

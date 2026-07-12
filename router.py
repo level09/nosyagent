@@ -9,15 +9,53 @@ logger = logging.getLogger(__name__)
 # Only exact-match trivial messages skip the full agent.
 # These genuinely need no memory, no brain, no context.
 SIMPLE_MESSAGES = {
-    "hi", "hey", "hello", "yo", "sup", "hola",
-    "thanks", "thank you", "thx", "ty",
-    "ok", "okay", "k", "kk",
-    "cool", "nice", "great", "awesome", "good", "perfect", "sweet",
-    "bye", "goodbye", "later", "cya", "gn", "night",
-    "yes", "no", "yep", "nope", "yeah", "nah", "sure", "yea",
-    "got it", "understood", "noted", "right",
-    "lol", "haha", "hehe", "lmao",
-    "wow", "oh", "ah", "hmm",
+    "hi",
+    "hey",
+    "hello",
+    "yo",
+    "sup",
+    "hola",
+    "thanks",
+    "thank you",
+    "thx",
+    "ty",
+    "ok",
+    "okay",
+    "k",
+    "kk",
+    "cool",
+    "nice",
+    "great",
+    "awesome",
+    "good",
+    "perfect",
+    "sweet",
+    "bye",
+    "goodbye",
+    "later",
+    "cya",
+    "gn",
+    "night",
+    "yes",
+    "no",
+    "yep",
+    "nope",
+    "yeah",
+    "nah",
+    "sure",
+    "yea",
+    "got it",
+    "understood",
+    "noted",
+    "right",
+    "lol",
+    "haha",
+    "hehe",
+    "lmao",
+    "wow",
+    "oh",
+    "ah",
+    "hmm",
 }
 
 SIMPLE_EMOJI = {"👍", "🙏", "❤️", "👌", "😂", "🤣", "💪", "🔥", "✅", "👋", "😊", "🙌"}
@@ -57,12 +95,17 @@ class Router:
             return True
         return False
 
-    async def classify(self, message: str) -> str:
+    async def classify(self, message: str, warm: bool = False) -> str:
         normalized = message.strip().lower()
         if any(keyword in normalized for keyword in COMPLEX_KEYWORDS):
             return "complex"
         if self._is_simple(message):
             return "simple"
+        # Mid-conversation short messages are follow-ups that need full context
+        # ("Will be 400g min", "No i meant ribeye") — never send them to the
+        # context-poor quick path.
+        if warm:
+            return "complex"
         # Short casual messages without questions don't need tools/memory
         words = message.strip().split()
         if len(words) <= 6 and "?" not in message:
@@ -75,14 +118,16 @@ class Router:
             response = await self.client.messages.create(
                 model=self.haiku,
                 max_tokens=10,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "Is this message a casual/social remark (SIMPLE) or does it need "
-                        "personal memory, tools, or detailed advice (COMPLEX)? "
-                        f'Reply with one word.\n\nMessage: "{message}"'
-                    ),
-                }],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            "Is this message a casual/social remark (SIMPLE) or does it need "
+                            "personal memory, tools, or detailed advice (COMPLEX)? "
+                            f'Reply with one word.\n\nMessage: "{message}"'
+                        ),
+                    }
+                ],
             )
             result = response.content[0].text.strip().lower()
             classification = "simple" if "simple" in result else "complex"
@@ -96,7 +141,9 @@ class Router:
         try:
             content = message
             if recent_context:
-                content = f"[Recent conversation]\n{recent_context}\n\n[Message]\n{message}"
+                content = (
+                    f"[Recent conversation]\n{recent_context}\n\n[Message]\n{message}"
+                )
 
             response = await self.client.messages.create(
                 model=self.haiku,
